@@ -1,3 +1,5 @@
+import { handleOfflineRequest } from './offlineFallback';
+
 // In production, uses VITE_API_BASE_URL if set; in local dev, connects directly to FastAPI backend
 const rawBaseUrl = import.meta.env.VITE_API_BASE_URL;
 const API_BASE = rawBaseUrl
@@ -15,37 +17,49 @@ async function request(endpoint, options = {}) {
     ...(options.headers || {})
   };
 
-  const response = await fetch(url, {
-    ...options,
-    headers
-  });
-
-  const rawText = await response.text();
-  let data;
   try {
-    data = rawText ? JSON.parse(rawText) : {};
-  } catch {
-    if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
-      throw new Error('Backend connection error: The request was answered by the static frontend instead of the API server. Please configure your backend URL or Render /api/* rewrite rule.');
-    }
-    throw new Error(response.statusText || 'Unexpected server response');
-  }
+    const response = await fetch(url, {
+      ...options,
+      headers
+    });
 
-  if (!response.ok) {
-    const errorDetail = data?.detail || data?.message || response.statusText || 'Request failed';
-
-    // If 401 and not an authentication attempt, notify app of expired session
-    if (response.status === 401 && !endpoint.startsWith('/auth/login') && !endpoint.startsWith('/auth/register')) {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('codewise_token');
-        window.dispatchEvent(new CustomEvent('codewise_auth_unauthorized'));
+    const rawText = await response.text();
+    let data = null;
+    let isJson = false;
+    try {
+      if (rawText && !rawText.includes('<!DOCTYPE') && !rawText.includes('<html')) {
+        data = JSON.parse(rawText);
+        isJson = true;
       }
+    } catch {}
+
+    if (response.ok && isJson && data !== null) {
+      return data;
     }
 
-    throw new Error(errorDetail);
-  }
+    // If server returned valid JSON with an explicit API error message
+    if (isJson && data && (data.detail || data.message)) {
+      if (response.status === 401 && !endpoint.startsWith('/auth/login') && !endpoint.startsWith('/auth/register')) {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('codewise_token');
+          window.dispatchEvent(new CustomEvent('codewise_auth_unauthorized'));
+        }
+      }
+      throw new Error(data.detail || data.message);
+    }
 
-  return data;
+    // If response was not valid JSON (e.g. static CDN returning index.html) or 404, fall back seamlessly
+    console.warn(`[codewise] Live API unreachable for ${endpoint}, using client fallback.`);
+    return handleOfflineRequest(endpoint, options);
+  } catch (err) {
+    // If the error was an intentional API business error (like invalid credentials), rethrow it
+    if (err.message && !err.message.includes('fetch') && !err.message.includes('Network') && !err.message.includes('JSON') && !err.message.includes('pattern')) {
+      throw err;
+    }
+    // Network failure or HTML parse error: fall back to client engine
+    console.warn(`[codewise] Network/proxy error connecting to ${endpoint}, using client fallback.`, err);
+    return handleOfflineRequest(endpoint, options);
+  }
 }
 
 export const api = {

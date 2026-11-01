@@ -161,6 +161,24 @@ export const IconX = ({ size = 16, className = "" }) => (
   </svg>
 );
 
+export const IconMaximize = ({ size = 16, className = "" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M15 3h6v6" />
+    <path d="M9 21H3v-6" />
+    <path d="M21 3l-7 7" />
+    <path d="M3 21l7-7" />
+  </svg>
+);
+
+export const IconMinimize = ({ size = 16, className = "" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M4 14h6v6" />
+    <path d="M20 10h-6V4" />
+    <path d="M14 10l7-7" />
+    <path d="M3 21l7-7" />
+  </svg>
+);
+
 export const IconBook = ({ size = 16, className = "" }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
     <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />

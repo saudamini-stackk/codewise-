@@ -189,15 +189,15 @@ export default function LoginPage({ onLoginSuccess }) {
         confirm_password: confirmPassword
       });
 
-      if (res.recovery_key) {
-        setRegisteredRecoveryKey(res.recovery_key);
-        setSavedUserToken(res.token);
-        setSavedUserData(res.user);
-      } else if (res.token) {
+      if (res.token) {
         localStorage.setItem('codewise_token', res.token);
         if (onLoginSuccess) {
           onLoginSuccess(res.user, res.token);
         }
+      } else if (res.recovery_key) {
+        setRegisteredRecoveryKey(res.recovery_key);
+        setSavedUserToken(res.token);
+        setSavedUserData(res.user);
       }
     } catch (err) {
       setGeneralError(err.message || 'Registration failed.');

@@ -2213,8 +2213,13 @@ body.is-resizing * {
 }
 
 .chat-drawer.expanded {
-  height: 260px;
+  min-height: 280px;
+  max-height: 85vh;
   flex-shrink: 0;
+}
+
+.chat-drawer.maximized {
+  max-height: 85vh !important;
 }
 
 body.is-resizing .chat-drawer {

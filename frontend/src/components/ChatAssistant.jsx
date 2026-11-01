@@ -3,7 +3,9 @@ import {
   IconMessage,
   IconSend,
   IconChevronDown,
-  IconChevronRight
+  IconChevronRight,
+  IconMaximize,
+  IconMinimize
 } from './Icons';
 import ResizableDivider from './ResizableDivider';
 
@@ -18,11 +20,12 @@ export default function ChatAssistant({
   onSendMessage,
   isSending,
   currentSessionId,
-  assistantHeight = 240,
+  assistantHeight = 340,
   setAssistantHeight
 }) {
   const [inputText, setInputText] = useState('');
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [isMaximized, setIsMaximized] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -33,7 +36,7 @@ export default function ChatAssistant({
     if (isExpanded) {
       scrollToBottom();
     }
-  }, [messages, isExpanded]);
+  }, [messages, isExpanded, isMaximized]);
 
   const handleSend = () => {
     if (!inputText.trim() || isSending) return;
@@ -50,9 +53,10 @@ export default function ChatAssistant({
 
   const handleAssistantResize = (e) => {
     if (!setAssistantHeight) return;
+    setIsMaximized(false);
     const windowH = window.innerHeight;
     const newH = windowH - e.clientY;
-    const clamped = Math.max(120, Math.min(newH, 500));
+    const clamped = Math.max(260, Math.min(newH, Math.floor(windowH * 0.85)));
     setAssistantHeight(clamped);
     try {
       localStorage.setItem('codewise_assistant_height', String(clamped));
@@ -61,24 +65,30 @@ export default function ChatAssistant({
 
   const handleAssistantReset = () => {
     if (setAssistantHeight) {
-      setAssistantHeight(240);
+      setAssistantHeight(360);
+      setIsMaximized(false);
       try {
-        localStorage.removeItem('codewise_assistant_height');
+        localStorage.setItem('codewise_assistant_height', '360');
       } catch {}
     }
   };
 
+  // Determine effective height
+  const currentH = isMaximized
+    ? Math.min(680, Math.floor(window.innerHeight * 0.75))
+    : Math.max(280, Number(assistantHeight) || 340);
+
   return (
     <div
-      className={`chat-drawer ${isExpanded ? 'expanded' : 'collapsed'}`}
-      style={isExpanded ? { height: `${assistantHeight}px` } : {}}
+      className={`chat-drawer ${isExpanded ? 'expanded' : 'collapsed'} ${isMaximized ? 'maximized' : ''}`}
+      style={isExpanded ? { height: `${currentH}px` } : {}}
     >
       {isExpanded && (
         <ResizableDivider
           direction="vertical"
           onResize={handleAssistantResize}
           onReset={handleAssistantReset}
-          title="Drag to resize assistant height, double-click to reset"
+          title="Drag up to expand assistant, double-click to reset"
         />
       )}
 
@@ -95,11 +105,46 @@ export default function ChatAssistant({
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-            {isExpanded ? 'Collapse' : 'Ask Question'}
-          </span>
-          <button className="btn-icon-subtle" style={{ pointerEvents: 'none' }}>
+        <div
+          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {isExpanded && (
+            <button
+              type="button"
+              className="btn-icon-subtle"
+              onClick={() => setIsMaximized(!isMaximized)}
+              title={isMaximized ? "Restore normal size" : "Expand full height"}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontSize: '0.72rem',
+                color: isMaximized ? 'var(--accent-pink)' : 'var(--text-secondary)',
+                backgroundColor: 'rgba(255, 255, 255, 0.04)',
+                padding: '3px 8px',
+                borderRadius: '6px'
+              }}
+            >
+              {isMaximized ? <IconMinimize size={13} /> : <IconMaximize size={13} />}
+              <span>{isMaximized ? 'Restore' : 'Expand'}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="btn-icon-subtle"
+            onClick={() => setIsExpanded(!isExpanded)}
+            title={isExpanded ? "Collapse assistant" : "Open assistant"}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '0.72rem',
+              color: 'var(--text-muted)'
+            }}
+          >
+            <span>{isExpanded ? 'Collapse' : 'Ask Question'}</span>
             {isExpanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
           </button>
         </div>
@@ -107,12 +152,13 @@ export default function ChatAssistant({
 
       {isExpanded && (
         <>
-          {/* Exactly 3 Suggested Questions Initially */}
+          {/* Suggestions */}
           <div className="chat-suggestions-minimal">
             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Suggestions:</span>
             {SUGGESTIONS.map((s, idx) => (
               <button
                 key={idx}
+                type="button"
                 className="btn-suggestion-clean"
                 onClick={() => onSendMessage(s)}
                 disabled={isSending || !currentSessionId}
@@ -123,7 +169,7 @@ export default function ChatAssistant({
           </div>
 
           {/* Conversation Messages */}
-          <div className="chat-messages-area">
+          <div className="chat-messages-area" style={{ flex: '1 1 auto', minHeight: '140px', overflowY: 'auto' }}>
             {messages.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem', margin: 'auto' }}>
                 Ask any question about this code or choose a suggestion above.
@@ -131,7 +177,7 @@ export default function ChatAssistant({
             ) : (
               messages.map((m) => (
                 <div key={m.id} className={`chat-message-row ${m.role}`}>
-                  <div className="chat-bubble" style={{ whiteSpace: 'pre-line' }}>
+                  <div className="chat-bubble" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text', lineHeight: '1.6' }}>
                     {m.content}
                   </div>
                   <div className="chat-time">
@@ -162,6 +208,7 @@ export default function ChatAssistant({
               disabled={isSending || !currentSessionId}
             />
             <button
+              type="button"
               className="btn-send-pink"
               onClick={handleSend}
               disabled={isSending || !inputText.trim() || !currentSessionId}

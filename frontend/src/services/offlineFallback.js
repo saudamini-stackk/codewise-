@@ -157,9 +157,15 @@ export function handleOfflineRequest(endpoint, options = {}) {
     const email = (body.email || '').trim().toLowerCase();
     const password = body.password || '';
 
-    // Validate demo account or general user
+    // Check registered users in storage
+    let regUsers = [];
+    try {
+      regUsers = JSON.parse(localStorage.getItem('codewise_registered_users') || '[]');
+    } catch {}
+    const matchedUser = regUsers.find(u => u.email === email);
+
     const isDemo = email === 'demo@codewise.dev' && password === 'DemoUser2026!';
-    const user = {
+    const user = matchedUser ? { id: matchedUser.id, name: matchedUser.name, email: matchedUser.email } : {
       id: isDemo ? 'demo-user-cloud' : `user-${Date.now()}`,
       name: isDemo ? 'Demo User' : (email.split('@')[0] || 'Student Developer'),
       email: email || 'demo@codewise.dev',
@@ -177,15 +183,24 @@ export function handleOfflineRequest(endpoint, options = {}) {
 
   // 3. Auth: Register
   if (endpoint === '/auth/register') {
+    const cleanEmail = (body.email || '').trim().toLowerCase();
+    const cleanName = (body.name || '').trim() || (cleanEmail.split('@')[0]) || 'Student Developer';
     const user = {
       id: `user-${Date.now()}`,
-      name: body.name || 'Student Developer',
-      email: (body.email || '').trim().toLowerCase(),
+      name: cleanName,
+      email: cleanEmail,
       created_at: new Date().toISOString()
     };
     const token = `cw_token_${Math.random().toString(36).substring(2)}${Date.now()}`;
     const recoveryKey = `CW-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-    localStorage.setItem('codewise_current_user', JSON.stringify(user));
+
+    try {
+      let regUsers = JSON.parse(localStorage.getItem('codewise_registered_users') || '[]');
+      regUsers = regUsers.filter(u => u.email !== cleanEmail);
+      regUsers.push({ ...user, password: body.password, recovery_key: recoveryKey });
+      localStorage.setItem('codewise_registered_users', JSON.stringify(regUsers));
+      localStorage.setItem('codewise_current_user', JSON.stringify(user));
+    } catch {}
 
     return {
       token,

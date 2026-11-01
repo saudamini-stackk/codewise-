@@ -37,7 +37,7 @@ export default function App() {
   const DEFAULT_SIDEBAR_WIDTH = 250;
   const DEFAULT_EDITOR_RATIO = 50;
   const DEFAULT_CONSOLE_HEIGHT = 180;
-  const DEFAULT_ASSISTANT_HEIGHT = 240;
+  const DEFAULT_ASSISTANT_HEIGHT = 340;
 
   // Sidebar Collapsed State (synchronized with Explorer)
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -86,7 +86,7 @@ export default function App() {
     try {
       const saved = localStorage.getItem('codewise_assistant_height');
       const val = Number(saved);
-      if (!isNaN(val) && val >= 120 && val <= 500) {
+      if (!isNaN(val) && val >= 280 && val <= 800) {
         return val;
       }
       return DEFAULT_ASSISTANT_HEIGHT;

@@ -1,0 +1,60 @@
+# System files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+**/*.Thumbs.db
+
+# Environment variables & secrets
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+backend/venv/
+venv/
+.venv/
+**/venv/
+**/.venv/
+.pytest_cache/
+**/.pytest_cache/
+.coverage
+htmlcov/
+
+# Node & Frontend
+node_modules/
+**/node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+**/dist/
+frontend/.vite/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Application Database
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+*.db
+*.sqlite
+*.sqlite3
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+_codewise_test.db
+
+# Logs, PIDs & temp
+*.log
+**/*.log
+*.pid
+**/*.pid

@@ -7,7 +7,6 @@ from backend.app.main import app
 from backend.app.database import get_db, get_iso_now
 from backend.app.executor import CodeExecutor
 from backend.app.analyzer.python_analyzer import PythonAnalyzer
-from backend.app.analyzer.practice_engine import PracticeEngine
 
 client = TestClient(app)
 
@@ -245,27 +244,13 @@ def test_18_chat_context_retention():
     assert m2.status_code == 200
     assert len(m2.json()["content"]) > 10
 
-# Test 19: Practice test scoring and evaluation
-def test_19_practice_test_scoring_and_evaluation():
-    engine = PracticeEngine()
+# Test 19: Viva questions generation
+def test_19_viva_questions_generation():
+    analyzer = PythonAnalyzer()
     code = "def is_even(n):\n    return n % 2 == 0"
-    test_obj = engine.generate_practice_test(code=code, language="python")
-    assert len(test_obj.questions) == 5
-
-    # Submit answers
-    answers = []
-    for q in test_obj.questions:
-        if q.options:
-            ans = q.options[0]
-        else:
-            ans = "Returns whether n modulo 2 equals zero."
-        answers.append({"question_id": q.id, "answer": ans})
-
-    eval_result = engine.evaluate_test(test_obj, answers)
-    assert eval_result.correct_count >= 0
-    assert eval_result.total_questions == 5
-    assert 0 <= eval_result.score_percentage <= 100
-    assert len(eval_result.evaluations) == 5
+    res = analyzer.analyze(code)
+    assert len(res.viva_questions) > 0
+    assert any("modulo" in q.question.lower() or "parity" in q.concept.lower() for q in res.viva_questions)
 
 # Test 20: Database persistence
 def test_20_database_persistence():

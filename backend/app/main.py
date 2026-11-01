@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .database import init_db
-from .routes import auth, analysis, sessions, chat, samples, system, practice
+from .routes import auth, analysis, sessions, chat, samples, system
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("codewise")
@@ -43,7 +43,6 @@ app.include_router(sessions.router)
 app.include_router(chat.router)
 app.include_router(samples.router)
 app.include_router(system.router)
-app.include_router(practice.router)
 
 from pathlib import Path
 from fastapi import Request

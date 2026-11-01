@@ -316,21 +316,6 @@ export const api = {
   // System
   getSystemStatus: () => request('/system/status'),
 
-  // Practice Test Assessment
-  generatePracticeTest: (code, language = 'python', sessionId = null) => request('/practice/generate', {
-    method: 'POST',
-    body: JSON.stringify({ code, language, session_id: sessionId })
-  }),
-
-  submitPracticeAnswers: (testId, answers) => request('/practice/evaluate', {
-    method: 'POST',
-    body: JSON.stringify({ test_id: testId, answers })
-  }),
-
-  getPracticeHistory: (sessionId = null) => request(
-    `/practice/history${sessionId ? `?session_id=${sessionId}` : ''}`
-  ),
-
   // Backup & Restore
   exportAllSessions: () => request('/sessions/export/all'),
   importAllSessions: (data) => request('/sessions/import/all', {

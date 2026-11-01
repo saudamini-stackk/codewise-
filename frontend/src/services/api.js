@@ -1,7 +1,10 @@
-// In local development, connect directly to FastAPI backend to avoid proxy socket bottlenecks
-const API_BASE = (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
-  ? 'http://127.0.0.1:8000/api'
-  : '/api';
+// In production, uses VITE_API_BASE_URL if set; in local dev, connects directly to FastAPI backend
+const rawBaseUrl = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = rawBaseUrl
+  ? `${rawBaseUrl.replace(/\/+$/, '')}/api`
+  : (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
+    ? 'http://127.0.0.1:8000/api'
+    : '/api';
 
 async function request(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`;

@@ -1,15 +1,40 @@
 import { handleOfflineRequest } from './offlineFallback';
 
-// In production, uses VITE_API_BASE_URL if set; in local dev, connects directly to FastAPI backend
-const rawBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
-const API_BASE = rawBaseUrl
-  ? `${rawBaseUrl}/api`
-  : (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'))
-    ? 'http://127.0.0.1:8000/api'
-    : '/api';
+// Dynamic API Base URL resolution:
+// 1. Checks localStorage override (codewise_api_base_url)
+// 2. Checks build-time environment variable (VITE_API_BASE_URL)
+// 3. Automatically resolves live Render backend when hosted on *.onrender.com
+// 4. Connects to local FastAPI backend when running locally on localhost / 127.0.0.1
+export function getApiBaseUrl() {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('codewise_api_base_url');
+    if (custom && custom.trim()) {
+      return custom.trim().replace(/\/+$/, '') + '/api';
+    }
+  }
+
+  const envBase = (import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (envBase) {
+    return `${envBase}/api`;
+  }
+
+  // Automatic Render cloud hosting backend resolution
+  if (typeof window !== 'undefined' && window.location.hostname.includes('onrender.com')) {
+    return 'https://codewise-b8np.onrender.com/api';
+  }
+
+  // Local development host resolution
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    return 'http://127.0.0.1:8000/api';
+  }
+
+  return '/api';
+}
 
 async function request(endpoint, options = {}) {
-  const url = `${API_BASE}${endpoint}`;
+  const base = getApiBaseUrl();
+  const cleanEndpoint = '/' + endpoint.replace(/^\/+/, '').trim();
+  const url = `${base}${cleanEndpoint}`;
   let token = null;
   if (typeof window !== 'undefined') {
     const rawToken = localStorage.getItem('codewise_token');

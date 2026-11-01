@@ -1,4 +1,4 @@
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel, Field
 
 class LineExplanation(BaseModel):
@@ -22,6 +22,12 @@ class DiagnosticItem(BaseModel):
     recommended_correction: str
     corrected_snippet: Optional[str] = None
     detection_type: str = "static_heuristic"
+    detection_source: Optional[str] = None
+
+    def __init__(self, **data: Any):
+        super().__init__(**data)
+        if not self.detection_source:
+            self.detection_source = self.detection_type
 
 class ComplexityInfo(BaseModel):
     time: str
@@ -81,6 +87,12 @@ class AnalysisResult(BaseModel):
     loop_details: Optional[LoopDetails] = None
     viva_questions: Optional[List[VivaQuestionItem]] = []
 
+class RuntimeDiagnostic(BaseModel):
+    exception_type: Optional[str] = None
+    error_message: Optional[str] = None
+    line_number: Optional[int] = None
+    traceback: Optional[str] = None
+
 class RunCodeRequest(BaseModel):
     code: str = Field(..., max_length=250000)
     language: str = "python"
@@ -94,6 +106,46 @@ class RunCodeResponse(BaseModel):
     exit_code: int
     execution_time_ms: int
     status: str
+    runtime_diagnostic: Optional[RuntimeDiagnostic] = None
+
+# Practice Assessment Models
+class PracticeQuestion(BaseModel):
+    id: str
+    category: str  # purpose, execution, output_prediction, error_identification, edge_cases
+    question_type: str  # multiple_choice, short_answer
+    question: str
+    options: Optional[List[str]] = None
+    correct_answer: str
+    explanation: str
+    rubric: Optional[str] = None
+
+class PracticeTest(BaseModel):
+    id: str
+    session_id: Optional[str] = None
+    code_hash: str
+    questions: List[PracticeQuestion]
+    created_at: str
+
+class SubmitPracticeAnswersRequest(BaseModel):
+    test_id: str
+    answers: Dict[str, str]
+
+class QuestionEvaluation(BaseModel):
+    question_id: str
+    student_answer: str
+    is_correct: bool
+    score: float
+    feedback: str
+    reference_answer: str
+
+class PracticeEvaluationResult(BaseModel):
+    id: str
+    test_id: str
+    total_questions: int
+    correct_count: int
+    score_percentage: float
+    evaluations: List[QuestionEvaluation]
+    completed_at: str
 
 class VerifySampleRequest(BaseModel):
     code: str = Field(..., max_length=250000)

@@ -83,7 +83,17 @@ export default function DiagnosticsList({
               )}
 
               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', alignSelf: 'flex-end' }}>
-                Detection source: {diag.detection_type === 'confirmed_parser' ? 'Confirmed Parser Diagnostic' : diag.detection_type === 'static_heuristic' ? 'Static Analysis Heuristic' : 'AI Inferred'}
+                Detection source: {(() => {
+                  const src = diag.detection_source || diag.detection_type;
+                  switch (src) {
+                    case 'confirmed_parser': return 'Confirmed Parser Diagnostic';
+                    case 'static_type_analysis': return 'Static Type Analysis';
+                    case 'static_heuristic': return 'Static Heuristic Analysis';
+                    case 'runtime_traceback': return 'Runtime Traceback Inspection';
+                    case 'llm_inferred': return 'LLM Inferred Suggestion';
+                    default: return src || 'Static Analysis';
+                  }
+                })()}
               </div>
             </div>
           ))

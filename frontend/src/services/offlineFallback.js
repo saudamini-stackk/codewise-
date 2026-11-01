@@ -152,76 +152,14 @@ export function handleOfflineRequest(endpoint, options = {}) {
     };
   }
 
-  // 2. Auth: Login
-  if (endpoint === '/auth/login') {
-    const email = (body.email || '').trim().toLowerCase();
-    const password = body.password || '';
-
-    // Check registered users in storage
-    let regUsers = [];
-    try {
-      regUsers = JSON.parse(localStorage.getItem('codewise_registered_users') || '[]');
-    } catch {}
-    const matchedUser = regUsers.find(u => u.email === email);
-
-    const isDemo = email === 'demo@codewise.dev' && password === 'DemoUser2026!';
-    const user = matchedUser ? { id: matchedUser.id, name: matchedUser.name, email: matchedUser.email } : {
-      id: isDemo ? 'demo-user-cloud' : `user-${Date.now()}`,
-      name: isDemo ? 'Demo User' : (email.split('@')[0] || 'Student Developer'),
-      email: email || 'demo@codewise.dev',
-      created_at: new Date().toISOString()
-    };
-    const token = `cw_token_${Math.random().toString(36).substring(2)}${Date.now()}`;
-    localStorage.setItem('codewise_current_user', JSON.stringify(user));
-
-    return {
-      token,
-      user,
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-    };
-  }
-
-  // 3. Auth: Register
-  if (endpoint === '/auth/register') {
-    const cleanEmail = (body.email || '').trim().toLowerCase();
-    const cleanName = (body.name || '').trim() || (cleanEmail.split('@')[0]) || 'Student Developer';
-    const user = {
-      id: `user-${Date.now()}`,
-      name: cleanName,
-      email: cleanEmail,
-      created_at: new Date().toISOString()
-    };
-    const token = `cw_token_${Math.random().toString(36).substring(2)}${Date.now()}`;
-    const recoveryKey = `CW-${Math.random().toString(36).substring(2, 6).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-    try {
-      let regUsers = JSON.parse(localStorage.getItem('codewise_registered_users') || '[]');
-      regUsers = regUsers.filter(u => u.email !== cleanEmail);
-      regUsers.push({ ...user, password: body.password, recovery_key: recoveryKey });
-      localStorage.setItem('codewise_registered_users', JSON.stringify(regUsers));
-      localStorage.setItem('codewise_current_user', JSON.stringify(user));
-    } catch {}
-
-    return {
-      token,
-      user,
-      recovery_key: recoveryKey,
-      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-    };
+  // 2. Auth: Never simulate credentials or store plaintext passwords offline
+  if (endpoint === '/auth/login' || endpoint === '/auth/register' || endpoint === '/auth/forgot-password') {
+    throw new Error('Authentication requires an active connection to the Codewise backend server.');
   }
 
   // 4. Auth: Get Current User
   if (endpoint === '/auth/me') {
-    try {
-      const saved = localStorage.getItem('codewise_current_user');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return {
-      id: 'demo-user-cloud',
-      name: 'Demo User',
-      email: 'demo@codewise.dev',
-      created_at: new Date().toISOString()
-    };
+    throw new Error('Authentication check requires an active connection to the Codewise backend.');
   }
 
   // 5. Auth: Logout
@@ -549,57 +487,26 @@ export function handleOfflineRequest(endpoint, options = {}) {
     };
   }
 
-  // 17. Run Code: Sandboxed or Simulated Execution
+  // 17. Run Code: Never simulate code execution on the client side
   if (endpoint === '/run') {
-    const code = body.code || '';
-    const inputData = (body.input_data || '').trim();
-
-    // Check Even/Odd Python
-    if (code.includes('check_even_odd') || code.includes('even') || code.includes('odd')) {
-      const chosenNum = inputData ? parseInt(inputData, 10) : 6;
-      const isEven = chosenNum % 2 === 0;
-      return {
-        stdout: `=== Even or Odd Checker ===\nEnter an integer: ${chosenNum}\n${chosenNum} is ${isEven ? 'even' : 'odd'}.\n`,
-        stderr: '',
-        exit_code: 0,
-        execution_time_ms: 28,
-        status: 'success'
-      };
-    }
-
-    // Check JavaScript code
-    if (code.includes('console.log')) {
-      let logs = [];
-      try {
-        const originalLog = console.log;
-        console.log = (...args) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
-        new Function(code)();
-        console.log = originalLog;
-        return {
-          stdout: logs.join('\n') + '\n',
-          stderr: '',
-          exit_code: 0,
-          execution_time_ms: 15,
-          status: 'success'
-        };
-      } catch (err) {
-        return {
-          stdout: logs.join('\n'),
-          stderr: String(err),
-          exit_code: 1,
-          execution_time_ms: 12,
-          status: 'error'
-        };
-      }
-    }
-
-    // Default execution output
     return {
-      stdout: `Program executed successfully.\n[Output generated at ${new Date().toLocaleTimeString()}]\n`,
-      stderr: '',
-      exit_code: 0,
-      execution_time_ms: 22,
-      status: 'success'
+      stdout: '',
+      stderr: 'Backend execution service is unreachable. Real code execution requires an active connection to the Codewise backend runtime.',
+      exit_code: 1,
+      execution_time_ms: 0,
+      status: 'backend_unavailable'
+    };
+  }
+
+  // 18. Verify Sample: Never simulate verification on the client side
+  if (endpoint === '/verify-sample') {
+    return {
+      is_match: false,
+      actual_output: '',
+      expected_output: body.expected_output || '',
+      exit_code: 1,
+      execution_time_ms: 0,
+      notes: 'Sample verification requires an active connection to the Codewise backend runtime.'
     };
   }
 

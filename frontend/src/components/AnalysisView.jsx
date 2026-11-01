@@ -19,11 +19,52 @@ export default function AnalysisView({
   code,
   language
 }) {
-  // Explore further mode: null | 'linebyline' | 'dryrun' | 'complexity'
+  // Explore further mode: null | 'linebyline' | 'dryrun' | 'complexity' | 'practice'
   const [activeExplore, setActiveExplore] = useState(null);
   const [copiedFix, setCopiedFix] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState(null);
+
+  // Practice Test State
+  const [practiceTest, setPracticeTest] = useState(null);
+  const [practiceAnswers, setPracticeAnswers] = useState({});
+  const [isGeneratingTest, setIsGeneratingTest] = useState(false);
+  const [isSubmittingTest, setIsSubmittingTest] = useState(false);
+  const [practiceEvaluation, setPracticeEvaluation] = useState(null);
+  const [practiceError, setPracticeError] = useState('');
+
+  const handleGeneratePracticeTest = async () => {
+    setIsGeneratingTest(true);
+    setPracticeError('');
+    setPracticeEvaluation(null);
+    try {
+      const res = await api.generatePracticeTest(null, null, code, language || 'python');
+      setPracticeTest(res);
+      setPracticeAnswers({});
+    } catch (err) {
+      setPracticeError(err.message || 'Failed to generate practice test.');
+    } finally {
+      setIsGeneratingTest(false);
+    }
+  };
+
+  const handleSubmitPracticeAnswers = async () => {
+    if (!practiceTest?.id) return;
+    setIsSubmittingTest(true);
+    setPracticeError('');
+    try {
+      const answersList = (practiceTest.questions || []).map(q => ({
+        question_id: q.id,
+        answer: practiceAnswers[q.id] || ''
+      }));
+      const res = await api.submitPracticeAnswers(practiceTest.id, answersList);
+      setPracticeEvaluation(res);
+    } catch (err) {
+      setPracticeError(err.message || 'Failed to submit practice answers.');
+    } finally {
+      setIsSubmittingTest(false);
+    }
+  };
 
   if (isAnalyzing) {
     return (
@@ -478,6 +519,14 @@ export default function AnalysisView({
                 <span>Complexity analysis</span>
               </button>
             )}
+
+            <button
+              className={`btn-explore-clean ${activeExplore === 'practice' ? 'active' : ''}`}
+              onClick={() => toggleExplore('practice')}
+            >
+              <IconBook size={13} />
+              <span>Practice Test (5 Qs)</span>
+            </button>
           </div>
 
           {/* Action Drawer: Line-by-Line */}
@@ -580,6 +629,178 @@ export default function AnalysisView({
               {analysis.complexity?.explanation && (
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                   {analysis.complexity.explanation}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Action Drawer: Practice Assessment (5 Questions) */}
+          {activeExplore === 'practice' && (
+            <div className="explore-drawer">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                    5-Question Code Logic Assessment
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Derived from your active code: purpose, execution flow, output prediction, errors, and edge cases.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-tool-clean"
+                  onClick={handleGeneratePracticeTest}
+                  disabled={isGeneratingTest}
+                  style={{ whiteSpace: 'nowrap', padding: '4px 10px' }}
+                >
+                  {isGeneratingTest ? 'Generating...' : (practiceTest ? 'Regenerate Test' : 'Start Practice Test')}
+                </button>
+              </div>
+
+              {practiceError && (
+                <div style={{ color: '#ef4444', fontSize: '0.78rem', marginBottom: '8px' }}>
+                  {practiceError}
+                </div>
+              )}
+
+              {!practiceTest && !isGeneratingTest && (
+                <div style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
+                  Click <strong>Start Practice Test</strong> above to generate 5 targeted questions derived from this program.
+                </div>
+              )}
+
+              {practiceTest && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {practiceTest.questions?.map((q, idx) => (
+                    <div
+                      key={q.id}
+                      style={{
+                        padding: '10px 12px',
+                        backgroundColor: 'var(--bg-panel)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--border-subtle)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.72rem', color: 'var(--accent-pink-soft)', fontWeight: 600 }}>
+                          Question {idx + 1} ({q.category})
+                        </span>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                          {q.points} point{q.points > 1 ? 's' : ''}
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: '0.82rem', color: 'var(--text-primary)', fontWeight: 500 }}>
+                        {q.prompt}
+                      </div>
+
+                      {/* Multiple Choice Options */}
+                      {q.options && q.options.length > 0 ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
+                          {q.options.map((opt, optIdx) => (
+                            <label
+                              key={optIdx}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                fontSize: '0.78rem',
+                                color: practiceAnswers[q.id] === opt ? 'var(--accent-pink-soft)' : 'var(--text-secondary)',
+                                cursor: 'pointer',
+                                padding: '4px 6px',
+                                borderRadius: '4px',
+                                backgroundColor: practiceAnswers[q.id] === opt ? 'rgba(244, 114, 182, 0.08)' : 'transparent'
+                              }}
+                            >
+                              <input
+                                type="radio"
+                                name={`question_${q.id}`}
+                                value={opt}
+                                checked={practiceAnswers[q.id] === opt}
+                                onChange={() => setPracticeAnswers({ ...practiceAnswers, [q.id]: opt })}
+                                disabled={isSubmittingTest || !!practiceEvaluation}
+                              />
+                              <span>{opt}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <textarea
+                          rows={2}
+                          placeholder="Type your explanation or predicted output..."
+                          value={practiceAnswers[q.id] || ''}
+                          onChange={(e) => setPracticeAnswers({ ...practiceAnswers, [q.id]: e.target.value })}
+                          disabled={isSubmittingTest || !!practiceEvaluation}
+                          style={{
+                            width: '100%',
+                            backgroundColor: 'rgba(0,0,0,0.2)',
+                            color: 'var(--text-primary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '4px',
+                            padding: '6px 8px',
+                            fontSize: '0.78rem',
+                            resize: 'vertical',
+                            marginTop: '4px'
+                          }}
+                        />
+                      )}
+
+                      {/* Display Question Evaluation Result */}
+                      {practiceEvaluation?.evaluations?.find(e => e.question_id === q.id) && (() => {
+                        const qEval = practiceEvaluation.evaluations.find(e => e.question_id === q.id);
+                        return (
+                          <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border-subtle)', fontSize: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: qEval.is_correct ? '#10b981' : '#f59e0b' }}>
+                              <span>{qEval.is_correct ? '✓ Correct' : '✕ Needs Review'}</span>
+                              <span>({qEval.score}/{qEval.max_score} pts)</span>
+                            </div>
+                            <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>
+                              {qEval.feedback}
+                            </div>
+                            {!qEval.is_correct && qEval.correct_reference && (
+                              <div style={{ color: 'var(--accent-pink-soft)', marginTop: '2px' }}>
+                                Reference: {qEval.correct_reference}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ))}
+
+                  {/* Submit Button & Total Score */}
+                  {!practiceEvaluation ? (
+                    <button
+                      type="button"
+                      className="btn-tool-clean"
+                      onClick={handleSubmitPracticeAnswers}
+                      disabled={isSubmittingTest}
+                      style={{ padding: '8px', fontWeight: 600, color: 'var(--accent-pink-soft)' }}
+                    >
+                      {isSubmittingTest ? 'Evaluating Answers...' : 'Submit Answers for Rubric Evaluation'}
+                    </button>
+                  ) : (
+                    <div
+                      style={{
+                        padding: '12px',
+                        backgroundColor: 'rgba(244, 114, 182, 0.08)',
+                        border: '1px solid var(--accent-pink)',
+                        borderRadius: 'var(--radius-sm)',
+                        textAlign: 'center'
+                      }}
+                    >
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Final Assessment Score</div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--accent-pink)' }}>
+                        {practiceEvaluation.score_percentage}% ({practiceEvaluation.total_score}/{practiceEvaluation.max_possible_score} pts)
+                      </div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        {practiceEvaluation.feedback_summary}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

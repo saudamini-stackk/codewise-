@@ -1,15 +1,22 @@
 import uuid
-from fastapi import APIRouter, HTTPException
-from ..models import ChatRequest, MessageItem, AnalysisResult
+import json
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends
+from ..models import ChatRequest, MessageItem, AnalysisResult, RunCodeResponse
 from ..database import get_db, get_iso_now
 from ..analyzer.chat_engine import ChatEngine
-from .sessions import parse_analysis_row
+from ..auth import optional_current_user
+from .sessions import parse_analysis_row, verify_session_ownership
 
 router = APIRouter(prefix="/api/sessions", tags=["Chat"])
 chat_engine = ChatEngine()
 
 @router.post("/{session_id}/chat", response_model=MessageItem)
-async def chat_with_assistant(session_id: str, req: ChatRequest):
+async def chat_with_assistant(
+    session_id: str,
+    req: ChatRequest,
+    user: Optional[dict] = Depends(optional_current_user)
+):
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=400, detail="Cannot send empty chat message.")
 
@@ -18,22 +25,24 @@ async def chat_with_assistant(session_id: str, req: ChatRequest):
     with get_db() as conn:
         cursor = conn.cursor()
 
-        # Check session exists
-        cursor.execute("SELECT id FROM sessions WHERE id = ?", (session_id,))
-        if not cursor.fetchone():
+        # Check session exists and verify ownership (IDOR defense)
+        cursor.execute("SELECT id, user_id FROM sessions WHERE id = ?", (session_id,))
+        session_row = cursor.fetchone()
+        if not session_row:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "chat in")
 
         # Get relevant code version
         version_id = req.code_version_id
         if not version_id:
             cursor.execute(
-                "SELECT id, code, language FROM code_versions WHERE session_id = ? ORDER BY version_number DESC LIMIT 1",
+                "SELECT id, code, language, execution_result_json FROM code_versions WHERE session_id = ? ORDER BY version_number DESC LIMIT 1",
                 (session_id,)
             )
             v_row = cursor.fetchone()
         else:
             cursor.execute(
-                "SELECT id, code, language FROM code_versions WHERE id = ? AND session_id = ?",
+                "SELECT id, code, language, execution_result_json FROM code_versions WHERE id = ? AND session_id = ?",
                 (version_id, session_id)
             )
             v_row = cursor.fetchone()
@@ -44,15 +53,26 @@ async def chat_with_assistant(session_id: str, req: ChatRequest):
         version_id = v_row["id"]
         code = v_row["code"]
         language = v_row["language"]
+        exec_json = v_row["execution_result_json"]
+        runtime_res = None
+        if exec_json:
+            try:
+                runtime_res = RunCodeResponse(**json.loads(exec_json))
+            except Exception:
+                runtime_res = None
 
         # Get analysis
         cursor.execute("SELECT * FROM analyses WHERE code_version_id = ? LIMIT 1", (version_id,))
         a_row = cursor.fetchone()
         analysis_obj = parse_analysis_row(dict(a_row)) if a_row else None
 
-        # Get recent message history
+        # Get most recent 10 messages in chronological order
         cursor.execute(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT 10",
+            """SELECT role, content FROM (
+                SELECT role, content, created_at FROM messages
+                WHERE session_id = ?
+                ORDER BY created_at DESC LIMIT 10
+            ) ORDER BY created_at ASC""",
             (session_id,)
         )
         history = [dict(r) for r in cursor.fetchall()]
@@ -70,7 +90,8 @@ async def chat_with_assistant(session_id: str, req: ChatRequest):
         code=code,
         language=language,
         analysis=analysis_obj,
-        history=history
+        history=history,
+        runtime_result=runtime_res
     )
 
     # 3. Save assistant message

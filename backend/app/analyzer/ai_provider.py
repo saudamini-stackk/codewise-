@@ -15,7 +15,10 @@ from .static_engine import StaticEngine
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the AI engine for codewise (tagline: "understand the code. master the logic.").
+# Benchmarked Academic Prompts
+BENCHMARK_PROMPT_A = """Analyze the provided code and provide a clear, concise plain-language summary of its purpose and behavior."""
+
+BENCHMARK_PROMPT_B = """You are the AI engine for codewise (tagline: "understand the code. master the logic.").
 Analyze the provided code and return a structured JSON response matching this exact schema:
 {
   "overview": "Clear explanation of program purpose and problem it solves.",
@@ -45,13 +48,18 @@ Analyze the provided code and return a structured JSON response matching this ex
       "explanation": "details",
       "recommended_correction": "how to fix",
       "corrected_snippet": "code snippet",
-      "detection_type": "llm_inferred"
+      "detection_type": "llm_inferred",
+      "detection_source": "llm_inferred"
     }
   ],
   "suggested_code": "complete corrected or optimized code if helpful or null",
   "explanation_of_changes": "explanation of what changed and why or null"
 }
 Output ONLY raw valid JSON. Do not wrap in markdown quotes if possible, or use standard json blocks."""
+
+BENCHMARK_PROMPT_C = """You are a patient programming tutor. Analyze this code for potential runtime errors, type mismatches, boundary bugs, and offer constructive pedagogical debugging guidance."""
+
+SYSTEM_PROMPT = BENCHMARK_PROMPT_B
 
 class AIProvider:
     def __init__(self, static_fallback: StaticEngine):
@@ -63,23 +71,38 @@ class AIProvider:
         language: str,
         filename: Optional[str] = None
     ) -> AnalysisResult:
-        # Check if an API key is available
-        api_key = OPENAI_API_KEY or CODEWISE_AI_KEY or GEMINI_API_KEY
-        if not api_key:
-            # Local mode
-            return self.static_fallback.analyze(code, language, filename)
+        result = None
+        # Strict provider selection honoring AI_PROVIDER configuration
+        if AI_PROVIDER == "gemini":
+            if GEMINI_API_KEY:
+                try:
+                    result = await self._call_gemini(code, language, GEMINI_API_KEY)
+                except Exception as e:
+                    logger.warning(f"Gemini API call failed: {e}")
+        elif AI_PROVIDER == "openai":
+            key = OPENAI_API_KEY or CODEWISE_AI_KEY
+            if key:
+                try:
+                    result = await self._call_openai(code, language, key)
+                except Exception as e:
+                    logger.warning(f"OpenAI API call failed: {e}")
+        else:
+            # Auto-detection if AI_PROVIDER not explicitly constrained
+            if GEMINI_API_KEY:
+                try:
+                    result = await self._call_gemini(code, language, GEMINI_API_KEY)
+                except Exception as e:
+                    logger.warning(f"Gemini API call failed: {e}")
+            elif OPENAI_API_KEY or CODEWISE_AI_KEY:
+                try:
+                    result = await self._call_openai(code, language, OPENAI_API_KEY or CODEWISE_AI_KEY)
+                except Exception as e:
+                    logger.warning(f"OpenAI API call failed: {e}")
 
-        try:
-            if GEMINI_API_KEY and (AI_PROVIDER == "gemini" or not OPENAI_API_KEY):
-                result = await self._call_gemini(code, language, GEMINI_API_KEY)
-            else:
-                result = await self._call_openai(code, language, api_key)
-            if result:
-                result.mode = "ai"
-                return result
-        except Exception as e:
-            logger.warning(f"AI Provider call failed, falling back to local static analysis: {e}")
-        
+        if result:
+            result.mode = "ai"
+            return result
+
         # Fallback to local rule-based analysis
         res = self.static_fallback.analyze(code, language, filename)
         res.mode = "local"

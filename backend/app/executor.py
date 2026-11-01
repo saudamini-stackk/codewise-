@@ -2,7 +2,9 @@ import subprocess
 import tempfile
 import time
 import os
+import re
 import shutil
+import signal
 from pathlib import Path
 from typing import Dict, Any, Optional
 from .detector import LANGUAGES_REGISTRY
@@ -93,6 +95,10 @@ def set_sandbox_limits() -> None:
     """Sets OS-level resource limits for the sandboxed child process."""
     try:
         import resource
+        try:
+            os.setsid()
+        except Exception:
+            pass
         # Limit CPU time to 6 seconds (soft) / 8 seconds (hard)
         resource.setrlimit(resource.RLIMIT_CPU, (6, 8))
         # Limit maximum file size created to 10 MB to prevent disk exhaustion
@@ -100,6 +106,46 @@ def set_sandbox_limits() -> None:
         resource.setrlimit(resource.RLIMIT_FSIZE, (max_fsize, max_fsize))
     except Exception:
         pass
+
+def extract_python_runtime_diagnostic(stderr: str) -> Optional[Dict[str, Any]]:
+    """Extracts structured diagnostic information (exception type, message, line number, traceback) from stderr."""
+    if not stderr:
+        return None
+    lines = stderr.strip().splitlines()
+    if not lines:
+        return None
+
+    last_line = lines[-1].strip()
+    match = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*(?:Error|Exception)|KeyboardInterrupt|SystemExit):\s*(.*)$", last_line)
+    exc_type = None
+    err_msg = None
+    if match:
+        exc_type = match.group(1)
+        err_msg = match.group(2)
+    elif ":" in last_line:
+        parts = last_line.split(":", 1)
+        if len(parts[0].split()) == 1 and parts[0][0].isupper():
+            exc_type = parts[0].strip()
+            err_msg = parts[1].strip()
+
+    line_no = None
+    for line in reversed(lines):
+        line_match = re.search(r'File ".*(?:code\.py|script\.sh|[a-zA-Z0-9_]+\.[a-zA-Z]+)", line (\d+)', line)
+        if line_match:
+            try:
+                line_no = int(line_match.group(1))
+                break
+            except ValueError:
+                pass
+
+    if exc_type or line_no:
+        return {
+            "exception_type": exc_type or "RuntimeError",
+            "error_message": err_msg or last_line,
+            "line_number": line_no,
+            "traceback": stderr
+        }
+    return None
 
 class CodeExecutor:
     @staticmethod
@@ -457,15 +503,27 @@ class CodeExecutor:
                 )
 
                 elapsed_ms = int((time.time() - start_time) * 1000)
+                status = "success" if proc.returncode == 0 else "error"
+                runtime_diagnostic = None
+                if proc.returncode != 0 and lang in {"python", "py"}:
+                    runtime_diagnostic = extract_python_runtime_diagnostic(proc.stderr)
+
                 return {
                     "stdout": truncate_output(proc.stdout),
                     "stderr": truncate_output(proc.stderr),
                     "exit_code": proc.returncode,
                     "execution_time_ms": elapsed_ms,
-                    "status": "success" if proc.returncode == 0 else "error"
+                    "status": status,
+                    "runtime_diagnostic": runtime_diagnostic
                 }
 
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
+                # Ensure the entire process group is terminated
+                try:
+                    if hasattr(exc, "cmd") and hasattr(proc, "pid"):
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    pass
                 elapsed_ms = int((time.time() - start_time) * 1000)
                 return {
                     "stdout": "",
@@ -476,7 +534,13 @@ class CodeExecutor:
                     ),
                     "exit_code": 124,
                     "execution_time_ms": elapsed_ms,
-                    "status": "timeout"
+                    "status": "timeout",
+                    "runtime_diagnostic": {
+                        "exception_type": "TimeoutExpired",
+                        "error_message": f"Process exceeded time limit of {timeout} seconds",
+                        "line_number": None,
+                        "traceback": ""
+                    }
                 }
             except Exception as exc:
                 elapsed_ms = int((time.time() - start_time) * 1000)

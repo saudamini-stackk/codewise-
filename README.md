@@ -40,25 +40,35 @@
 - Severity classification: `error`, `warning`, `suggestion`.
 - **Suggested Optimized Code**: Full corrected snippet with detailed notes on what changed and why, with a one-click "Apply Fix" button.
 
-### 4. Sandboxed Code Execution
-- **Restricted Sandbox**: Code executes in a dedicated temporary directory with scrubbed environment variables (all API keys and host secrets stripped).
+### 4. Sandboxed Code Execution & Runtime Diagnostics
+- **Restricted Sandbox**: Code executes in an isolated temporary directory with scrubbed environment variables (all API keys and host secrets stripped).
+- **Process Group Isolation**: Spawns isolated process group sessions (`os.setsid()`) terminating entire runaway child trees on timeout with `os.killpg()`.
 - **Kernel Resource Limits**: Enforced OS limits (`RLIMIT_CPU` at 6s, `RLIMIT_FSIZE` at 10 MB).
-- **Execution Console**: Compact terminal below editor showing real stdout, stderr, exit code, and execution duration.
-- **Interactive Stdin**: Pass standard input to interactive scripts.
-- **Safe HTML/CSS Preview**: Sandboxed iframe live preview for web technologies rather than blind binary execution.
-- **Honest Runtime Handling**: Non-runnable formats (SQL, JSON, YAML, Markdown, Dockerfile) and uninstalled runtimes (Java, Go, Rust, C#) display clear explanations instead of fake results.
+- **Standardized Execution Statuses**: Returns genuine status flags: `success`, `error`, `compilation_error`, `timeout`, `runtime_missing`, `unsupported_runtime`, `unsupported_language`, `backend_unavailable`, and `empty_code`.
+- **Runtime Traceback Extraction**: Structured exception parser extracts runtime exception types, error messages, and line numbers into structured `runtime_traceback` diagnostics.
+- **Strict Normalized Verification**: `/api/verify-sample` enforces exact character matching (line-ending normalized) requiring `exit_code == 0` and non-timeout, eliminating false-positive substring matching.
 
-### 5. Interactive Learning Assistant
-- Context-aware follow-up tutor drawer anchored along the bottom with vertical resizing.
-- Automatically retains the active file code, language, analysis, and recent conversation history.
-- Pre-populated pedagogical suggestion buttons (*"Explain more simply"*, *"Show a dry run"*, *"How can I improve this?"*).
-- Operates locally without requiring any external network connection or API keys.
+### 5. Code-Derived Practice Assessments
+- **5 Targeted Questions**: Automatically generates 5 pedagogical questions derived directly from the loaded program:
+  1. Primary purpose and problem domain
+  2. Step-by-step chronological execution path
+  3. Precise output prediction
+  4. Probable runtime and syntax failure modes
+  5. Boundary and edge-case behavior
+- **Rubric-Based Scoring**: Automated rubric evaluation supporting multiple-choice and short-answer responses with percentage scores and detailed feedback.
+- **Persistent Assessment History**: Saves tests and evaluation scores in the SQLite database under `/api/practice`.
 
-### 6. Persistence & Version History
+### 6. Interactive Learning Assistant & Diagnostics
+- Context-aware follow-up tutor drawer anchored along the bottom with vertical resizing and expand/maximize controls.
+- Automatically retains the active file code, language, analysis, runtime execution results, and the most recent 10 messages of conversation history.
+- Standardized diagnostic detection sources: `confirmed_parser`, `static_type_analysis`, `static_heuristic`, `runtime_traceback`, and `llm_inferred`.
+- Strict AI provider isolation honoring `AI_PROVIDER` (`openai` vs `gemini`).
+
+### 7. Persistence, Revision History & IDOR Security
 - All sessions, code revisions, analyses, and conversations persist in SQLite (`data/codewise.db`).
+- **IDOR Protection**: Strict user session ownership verification across all `/api/sessions` and `/api/practice` endpoints, preventing unauthorized cross-user access or tampering.
 - Revisions are created only when code content actually changes; repeated runs or analyses never duplicate versions.
-- Restoring an earlier revision appends a new revision with that code, preserving complete revision history.
-- Built-in backup and restore tool (export/import JSON snapshots).
+- Built-in backup and restore tool (export/import JSON snapshots with schema validation).
 
 ---
 

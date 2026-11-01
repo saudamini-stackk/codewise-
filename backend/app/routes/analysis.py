@@ -383,32 +383,65 @@ async def analyze_code(req: AnalyzeRequest, user: Optional[dict] = Depends(optio
 @router.post("/verify-sample", response_model=VerifySampleResponse)
 def verify_sample(req: VerifySampleRequest):
     """
-    Executes code safely with representative sample input and compares actual output against expected output.
-    Allows students to verify algorithm mechanics in real time.
+    Executes code safely with representative sample input and strictly compares actual output against expected output.
+    Uses normalized exact matching (line ending normalization, per-line trailing whitespace trimming, trailing newline tolerance).
+    Only returns is_match=True when exit_code == 0, execution did not time out, and normalized actual output strictly equals normalized expected output.
     """
     try:
         res = CodeExecutor.run(req.code, req.language, req.sample_input or "")
-        actual = (res.get("stdout") or "").strip()
-        expected = (req.expected_output or "").strip()
+        raw_actual = res.get("stdout") or ""
+        raw_expected = req.expected_output or ""
 
-        # Normalization helper for whitespace tolerance
-        def norm(s: str) -> str:
-            return "\n".join(" ".join(line.split()) for line in s.replace("\r\n", "\n").splitlines() if line.strip())
+        # Normalize line endings and trim trailing whitespace per line
+        def normalize_stream(s: str) -> str:
+            text = s.replace("\r\n", "\n").replace("\r", "\n")
+            lines = [line.rstrip() for line in text.split("\n")]
+            # Strip trailing empty lines
+            while lines and lines[-1] == "":
+                lines.pop()
+            # Strip leading empty lines
+            while lines and lines[0] == "":
+                lines.pop(0)
+            return "\n".join(lines)
 
-        norm_actual = norm(actual)
-        norm_expected = norm(expected)
-        is_match = (norm_actual == norm_expected) or (actual == expected) or (norm_expected in norm_actual)
+        norm_actual = normalize_stream(raw_actual)
+        norm_expected = normalize_stream(raw_expected)
 
-        notes = "Actual output matches expected output." if is_match else "Output differs from expected result."
-        if res.get("stderr"):
-            err_snip = res.get("stderr")[:150]
-            notes += f" (stderr: {err_snip})"
+        exit_code = res.get("exit_code", 1)
+        status = res.get("status", "error")
+
+        # Strict exact match requirement: exit code must be 0, no timeout
+        is_match = False
+        if exit_code == 0 and status == "success":
+            if norm_actual == norm_expected:
+                is_match = True
+            elif req.sample_input:
+                # If code has interactive input prompt lines echoed before the computed output,
+                # check if the actual output lines after prompt echo strictly match expected output
+                actual_lines = norm_actual.split("\n")
+                for i in range(1, len(actual_lines)):
+                    candidate = "\n".join(actual_lines[i:]).strip()
+                    if candidate == norm_expected:
+                        is_match = True
+                        break
+
+        if is_match:
+            notes = "Verified: Actual output strictly matches expected output with successful exit code 0."
+        elif status == "timeout":
+            notes = "Verification failed: Execution timed out."
+        elif exit_code != 0:
+            notes = f"Verification failed: Process exited with non-zero exit code {exit_code}."
+            if res.get("stderr"):
+                err_snip = res.get("stderr")[:150]
+                notes += f" ({err_snip})"
+        else:
+            notes = "Verification failed: Actual output differs from expected output."
 
         return VerifySampleResponse(
             is_match=is_match,
-            actual_output=res.get("stdout") or "",
-            expected_output=req.expected_output or "",
-            exit_code=res.get("exit_code", 0),
+            actual_output=raw_actual,
+            expected_output=raw_expected,
+            exit_code=exit_code,
             execution_time_ms=res.get("execution_time_ms", 0),
             notes=notes
         )

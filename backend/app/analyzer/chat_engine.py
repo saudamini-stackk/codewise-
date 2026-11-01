@@ -2,8 +2,8 @@ import re
 import logging
 from typing import Optional, List, Dict, Any
 import httpx
-from ..config import OPENAI_API_KEY, GEMINI_API_KEY, CODEWISE_AI_KEY, AI_MODEL_NAME
-from ..models import AnalysisResult
+from ..config import OPENAI_API_KEY, GEMINI_API_KEY, CODEWISE_AI_KEY, AI_MODEL_NAME, AI_PROVIDER
+from ..models import AnalysisResult, RunCodeResponse
 
 logger = logging.getLogger(__name__)
 
@@ -14,19 +14,28 @@ class ChatEngine:
         code: str,
         language: str,
         analysis: Optional[AnalysisResult],
-        history: List[Dict[str, str]]
+        history: List[Dict[str, str]],
+        runtime_result: Optional[RunCodeResponse] = None
     ) -> Dict[str, str]:
-        api_key = OPENAI_API_KEY or CODEWISE_AI_KEY or GEMINI_API_KEY
-        if api_key:
+        # Strict provider selection honoring AI_PROVIDER
+        if AI_PROVIDER == "gemini" and GEMINI_API_KEY:
             try:
-                ai_reply = await self._answer_with_ai(question, code, language, analysis, history, api_key)
+                ai_reply = await self._answer_with_gemini(question, code, language, analysis, history, GEMINI_API_KEY, runtime_result)
                 if ai_reply:
                     return {"reply": ai_reply, "mode": "ai"}
             except Exception as e:
-                logger.warning(f"AI Chat failed, falling back to rule-based engine: {e}")
+                logger.warning(f"Gemini AI Chat failed, falling back to rule-based engine: {e}")
+        elif (AI_PROVIDER == "openai" or not AI_PROVIDER) and (OPENAI_API_KEY or CODEWISE_AI_KEY):
+            api_key = OPENAI_API_KEY or CODEWISE_AI_KEY
+            try:
+                ai_reply = await self._answer_with_openai(question, code, language, analysis, history, api_key, runtime_result)
+                if ai_reply:
+                    return {"reply": ai_reply, "mode": "ai"}
+            except Exception as e:
+                logger.warning(f"OpenAI Chat failed, falling back to rule-based engine: {e}")
 
         # Local Rule-Based Chat Assistant
-        local_reply = self._answer_with_rules(question, code, language, analysis)
+        local_reply = self._answer_with_rules(question, code, language, analysis, runtime_result)
         return {"reply": local_reply, "mode": "local"}
 
     def _answer_with_rules(
@@ -34,9 +43,30 @@ class ChatEngine:
         q: str,
         code: str,
         lang: str,
-        analysis: Optional[AnalysisResult]
+        analysis: Optional[AnalysisResult],
+        runtime_result: Optional[RunCodeResponse] = None
     ) -> str:
         q_lower = q.lower().strip()
+
+        # 0. Runtime execution inquiries
+        if any(w in q_lower for w in ["runtime", "traceback", "crash", "exit code", "stdout", "stderr", "output of running"]) and runtime_result:
+            diag_text = ""
+            if runtime_result.runtime_diagnostic:
+                rd = runtime_result.runtime_diagnostic
+                diag_text = (
+                    f"\n\n**Runtime Exception Extracted:** `{rd.exception_type}` on line {rd.line_number or 'N/A'}\n"
+                    f"*Error Message:* {rd.error_message}\n"
+                    f"*Traceback:* ```\n{rd.traceback_snippet}\n```"
+                )
+            return (
+                f"### Execution Results Inspection\n\n"
+                f"- **Status:** `{runtime_result.status}`\n"
+                f"- **Exit Code:** `{runtime_result.exit_code}`\n"
+                f"- **Execution Time:** `{runtime_result.execution_time_ms} ms`\n"
+                f"- **Console Output (stdout):**\n```\n{runtime_result.stdout or '(none)'}\n```\n"
+                f"- **Error Output (stderr):**\n```\n{runtime_result.stderr or '(none)'}\n```"
+                f"{diag_text}"
+            )
 
         # 1. Loop explanations
         if any(w in q_lower for w in ["loop", "iteration", "repeat", "while", "for"]):
@@ -168,23 +198,44 @@ class ChatEngine:
             f"*(Tip: Ask specific questions such as \"explain the loop in simpler terms\", \"show a dry run\", \"what happens if input is zero\", or \"give me a practice challenge\"! For free-form reasoning, an AI API key can be set in your `.env` file.)*"
         )
 
-    async def _answer_with_ai(
+    def _build_context_prompt(
+        self,
+        lang: str,
+        code: str,
+        analysis: Optional[AnalysisResult],
+        runtime_result: Optional[RunCodeResponse]
+    ) -> str:
+        ctx_parts = [
+            f"You are the conversational tutor for codewise (tagline: 'understand the code. master the logic.').",
+            f"Programming language: {lang}",
+            f"Source code:\n```\n{code}\n```"
+        ]
+        if analysis:
+            ctx_parts.append(f"Analysis Overview: {analysis.overview}")
+            ctx_parts.append(f"Logic Workflow: {analysis.logic_workflow}")
+            if analysis.diagnostics:
+                diags_summary = "; ".join(f"[{d.severity}] {d.title} (line {d.line_number})" for d in analysis.diagnostics)
+                ctx_parts.append(f"Static Diagnostics: {diags_summary}")
+        if runtime_result:
+            ctx_parts.append(f"Runtime Status: {runtime_result.status}, Exit Code: {runtime_result.exit_code}")
+            if runtime_result.runtime_diagnostic:
+                ctx_parts.append(f"Runtime Diagnostic: {runtime_result.runtime_diagnostic.exception_type}: {runtime_result.runtime_diagnostic.error_message}")
+        ctx_parts.append("Answer the student's question clearly, pedagogically, and concisely using GitHub Flavored Markdown.")
+        return "\n\n".join(ctx_parts)
+
+    async def _answer_with_openai(
         self,
         q: str,
         code: str,
         lang: str,
         analysis: Optional[AnalysisResult],
         history: List[Dict[str, str]],
-        api_key: str
+        api_key: str,
+        runtime_result: Optional[RunCodeResponse] = None
     ) -> Optional[str]:
-        system_msg = (
-            f"You are the conversational tutor for codewise (tagline: 'understand the code. master the logic.').\n"
-            f"Current programming language: {lang}\n"
-            f"Current source code:\n```\n{code}\n```\n"
-            f"Answer the student's question clearly, pedagogically, and concisely in GitHub Flavored Markdown."
-        )
+        system_msg = self._build_context_prompt(lang, code, analysis, runtime_result)
         messages = [{"role": "system", "content": system_msg}]
-        for h in history[-6:]:  # include recent history context
+        for h in history[-8:]:
             messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
         messages.append({"role": "user", "content": q})
 
@@ -205,4 +256,34 @@ class ChatEngine:
                 return data["choices"][0]["message"]["content"]
             else:
                 logger.error(f"OpenAI Chat API returned {resp.status_code}: {resp.text}")
+                return None
+
+    async def _answer_with_gemini(
+        self,
+        q: str,
+        code: str,
+        lang: str,
+        analysis: Optional[AnalysisResult],
+        history: List[Dict[str, str]],
+        api_key: str,
+        runtime_result: Optional[RunCodeResponse] = None
+    ) -> Optional[str]:
+        system_msg = self._build_context_prompt(lang, code, analysis, runtime_result)
+        full_prompt = f"{system_msg}\n\nRecent Conversation History:\n"
+        for h in history[-8:]:
+            full_prompt += f"{h.get('role', 'user')}: {h.get('content', '')}\n"
+        full_prompt += f"user: {q}\nassistant:"
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": full_prompt}]}],
+            "generationConfig": {"temperature": 0.4}
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                logger.error(f"Gemini Chat API returned {resp.status_code}: {resp.text}")
                 return None

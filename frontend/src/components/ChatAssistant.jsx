@@ -26,7 +26,44 @@ export default function ChatAssistant({
   const [inputText, setInputText] = useState('');
   const [isExpanded, setIsExpanded] = useState(true);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [expandedMessages, setExpandedMessages] = useState({});
   const messagesEndRef = useRef(null);
+
+  const toggleMessageExpand = (msgId) => {
+    setExpandedMessages(prev => ({
+      ...prev,
+      [msgId]: !prev[msgId]
+    }));
+  };
+
+  const renderFormattedContent = (content, msgId) => {
+    if (!content) return null;
+    const isMsgExpanded = !!expandedMessages[msgId];
+    const lines = content.split('\n');
+    const isLong = lines.length > 8;
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text', lineHeight: '1.6' }}>
+          {content}
+        </div>
+        {isLong && (
+          <button
+            type="button"
+            className="btn-suggestion-clean"
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleMessageExpand(msgId);
+              if (!isMaximized) setIsMaximized(true);
+            }}
+            style={{ alignSelf: 'flex-start', marginTop: '4px', fontSize: '0.68rem', padding: '2px 8px' }}
+          >
+            {isMaximized ? 'Maximize Active View' : 'Expand Chat Panel'}
+          </button>
+        )}
+      </div>
+    );
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -166,10 +203,21 @@ export default function ChatAssistant({
                 {s}
               </button>
             ))}
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button
+                type="button"
+                className="btn-suggestion-clean"
+                onClick={() => setIsMaximized(!isMaximized)}
+                title={isMaximized ? "Restore default height" : "Expand chat view"}
+                style={{ color: isMaximized ? 'var(--accent-pink)' : 'var(--text-muted)', fontSize: '0.7rem' }}
+              >
+                {isMaximized ? 'Restore View' : 'Expand View'}
+              </button>
+            </div>
           </div>
 
           {/* Conversation Messages */}
-          <div className="chat-messages-area" style={{ flex: '1 1 auto', minHeight: '140px', overflowY: 'auto' }}>
+          <div className="chat-messages-area" style={{ flex: '1 1 0%', minHeight: '160px', overflowY: 'auto', WebkitOverflowScrolling: 'touch', scrollBehavior: 'smooth' }}>
             {messages.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.78rem', margin: 'auto' }}>
                 Ask any question about this code or choose a suggestion above.
@@ -177,8 +225,8 @@ export default function ChatAssistant({
             ) : (
               messages.map((m) => (
                 <div key={m.id} className={`chat-message-row ${m.role}`}>
-                  <div className="chat-bubble" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text', lineHeight: '1.6' }}>
-                    {m.content}
+                  <div className="chat-bubble">
+                    {renderFormattedContent(m.content, m.id)}
                   </div>
                   <div className="chat-time">
                     {m.role === 'user' ? 'You' : 'codewise Tutor'}

@@ -27,6 +27,21 @@ from ..auth import optional_current_user, require_current_user
 
 router = APIRouter(prefix="/api/sessions", tags=["Sessions"])
 
+DEMO_USER_ID = "demo-user-0000-0000-000000000001"
+
+def verify_session_ownership(session_row: Any, user: Optional[dict], action: str = "access") -> None:
+    """Enforces strict session ownership to prevent IDOR attacks while allowing demo access."""
+    if not session_row:
+        return
+    s_user = session_row["user_id"] if isinstance(session_row, dict) or hasattr(session_row, "__getitem__") else getattr(session_row, "user_id", None)
+    if not s_user or s_user == DEMO_USER_ID:
+        return
+    if not user or user["id"] != s_user:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: You do not have permission to {action} this session."
+        )
+
 def is_runnable_format(language: Optional[str], filename: Optional[str] = None) -> bool:
     if filename:
         ext = Path(filename).suffix.lower()
@@ -197,16 +212,17 @@ def create_session(
     )
 
 @router.get("/{session_id}", response_model=SessionDetail)
-def get_session(session_id: str):
+def get_session(session_id: str, user: Optional[dict] = Depends(optional_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, title, filename, language, is_runnable, created_at, updated_at FROM sessions WHERE id = ?",
+            "SELECT id, title, filename, language, is_runnable, user_id, created_at, updated_at FROM sessions WHERE id = ?",
             (session_id,)
         )
         session_row = cursor.fetchone()
         if not session_row:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "view")
 
         # Fetch versions
         cursor.execute(
@@ -282,7 +298,11 @@ def get_session(session_id: str):
         )
 
 @router.patch("/{session_id}", response_model=SessionSummary)
-def update_session(session_id: str, req: SessionUpdateRequest):
+def update_session(
+    session_id: str,
+    req: SessionUpdateRequest,
+    user: Optional[dict] = Depends(optional_current_user)
+):
     with get_db() as conn:
         cursor = conn.cursor()
         now = get_iso_now()
@@ -291,6 +311,7 @@ def update_session(session_id: str, req: SessionUpdateRequest):
         curr = cursor.fetchone()
         if not curr:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(curr, user, "update")
 
         new_title = req.title.strip() if req.title else curr["title"]
         new_filename = req.filename.strip() if req.filename else curr["filename"]
@@ -339,16 +360,25 @@ def update_session(session_id: str, req: SessionUpdateRequest):
         )
 
 @router.delete("/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: Optional[dict] = Depends(optional_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        curr = cursor.fetchone()
+        if not curr:
+            raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(curr, user, "delete")
         cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "success", "message": f"Session {session_id} deleted."}
 
 @router.post("/{session_id}/versions", response_model=CodeVersionItem)
-def save_session_version(session_id: str, req: SaveVersionRequest):
+def save_session_version(
+    session_id: str,
+    req: SaveVersionRequest,
+    user: Optional[dict] = Depends(optional_current_user)
+):
     """
     Rule B: Edits create versions (v1, v2, v3...) under that file.
     Unchanged content creates no duplicate version.
@@ -359,6 +389,7 @@ def save_session_version(session_id: str, req: SaveVersionRequest):
         session_row = cursor.fetchone()
         if not session_row:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "save version to")
 
         cursor.execute(
             "SELECT * FROM code_versions WHERE session_id = ? ORDER BY version_number DESC LIMIT 1",
@@ -416,7 +447,11 @@ def save_session_version(session_id: str, req: SaveVersionRequest):
         )
 
 @router.post("/{session_id}/restore", response_model=CodeVersionItem)
-def restore_session_version(session_id: str, req: RestoreVersionRequest):
+def restore_session_version(
+    session_id: str,
+    req: RestoreVersionRequest,
+    user: Optional[dict] = Depends(optional_current_user)
+):
     """
     Restores an earlier version by creating a new version with the target code,
     preserving full revision history.
@@ -427,6 +462,7 @@ def restore_session_version(session_id: str, req: RestoreVersionRequest):
         session_row = cursor.fetchone()
         if not session_row:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "restore version in")
 
         target = None
         if req.version_id:
@@ -499,6 +535,7 @@ def duplicate_session(session_id: str, user: Optional[dict] = Depends(optional_c
         session_row = cursor.fetchone()
         if not session_row:
             raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "duplicate")
 
         cursor.execute("SELECT * FROM code_versions WHERE session_id = ? ORDER BY version_number DESC LIMIT 1", (session_id,))
         latest = cursor.fetchone()
@@ -540,9 +577,19 @@ def duplicate_session(session_id: str, user: Optional[dict] = Depends(optional_c
         )
 
 @router.get("/{session_id}/versions/{version_id}")
-def get_session_version(session_id: str, version_id: str):
+def get_session_version(
+    session_id: str,
+    version_id: str,
+    user: Optional[dict] = Depends(optional_current_user)
+):
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+        session_row = cursor.fetchone()
+        if not session_row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        verify_session_ownership(session_row, user, "view version of")
+
         cursor.execute(
             "SELECT * FROM code_versions WHERE id = ? AND session_id = ?",
             (version_id, session_id)
@@ -575,32 +622,41 @@ def get_session_version(session_id: str, version_id: str):
         )
 
 @router.get("/export/all")
-def export_all_sessions():
+def export_all_sessions(user: Optional[dict] = Depends(optional_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sessions ORDER BY created_at ASC")
+        if user:
+            cursor.execute("SELECT * FROM sessions WHERE user_id = ? OR user_id = ? OR user_id IS NULL ORDER BY created_at ASC", (user["id"], DEMO_USER_ID))
+        else:
+            cursor.execute("SELECT * FROM sessions WHERE user_id = ? OR user_id IS NULL ORDER BY created_at ASC", (DEMO_USER_ID,))
         sessions = [dict(r) for r in cursor.fetchall()]
+        session_ids = [s["id"] for s in sessions]
 
-        cursor.execute("""
-            SELECT v.* FROM code_versions v
-            JOIN sessions s ON v.session_id = s.id
-            ORDER BY v.created_at ASC
-        """)
+        if not session_ids:
+            return {
+                "application": "codewise",
+                "export_version": "1.0",
+                "timestamp": get_iso_now(),
+                "data": {
+                    "sessions": [],
+                    "code_versions": [],
+                    "analyses": [],
+                    "messages": []
+                }
+            }
+
+        placeholders = ",".join("?" for _ in session_ids)
+        cursor.execute(f"SELECT * FROM code_versions WHERE session_id IN ({placeholders}) ORDER BY created_at ASC", session_ids)
         versions = [dict(r) for r in cursor.fetchall()]
+        version_ids = [v["id"] for v in versions]
 
-        cursor.execute("""
-            SELECT a.* FROM analyses a
-            JOIN code_versions v ON a.code_version_id = v.id
-            JOIN sessions s ON v.session_id = s.id
-            ORDER BY a.created_at ASC
-        """)
-        analyses = [dict(r) for r in cursor.fetchall()]
+        analyses = []
+        if version_ids:
+            v_placeholders = ",".join("?" for _ in version_ids)
+            cursor.execute(f"SELECT * FROM analyses WHERE code_version_id IN ({v_placeholders}) ORDER BY created_at ASC", version_ids)
+            analyses = [dict(r) for r in cursor.fetchall()]
 
-        cursor.execute("""
-            SELECT m.* FROM messages m
-            JOIN sessions s ON m.session_id = s.id
-            ORDER BY m.created_at ASC
-        """)
+        cursor.execute(f"SELECT * FROM messages WHERE session_id IN ({placeholders}) ORDER BY created_at ASC", session_ids)
         messages = [dict(r) for r in cursor.fetchall()]
 
         return {
@@ -620,19 +676,38 @@ def import_all_sessions(
     payload: Dict[str, Any] = Body(...),
     user: Optional[dict] = Depends(optional_current_user)
 ):
-    data = payload.get("data") if (isinstance(payload.get("data"), dict)) else payload
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid import format: Payload must be a JSON object.")
+
+    if "data" in payload:
+        if not isinstance(payload["data"], dict):
+            raise HTTPException(status_code=400, detail="Invalid import format: 'data' property must be a JSON object.")
+        data = payload["data"]
+    else:
+        data = payload
+
+    sessions_list = data.get("sessions", [])
+    if not isinstance(sessions_list, list):
+        raise HTTPException(status_code=400, detail="Invalid import data: 'sessions' must be an array.")
+
+    if len(sessions_list) > 500:
+        raise HTTPException(status_code=400, detail="Import limit exceeded: Maximum 500 sessions allowed per backup import.")
+
     imported_sessions = 0
     with get_db() as conn:
         cursor = conn.cursor()
-        for s in data.get("sessions", []):
-            s_user_id = s.get("user_id") or (user["id"] if user else None)
+        for s in sessions_list:
+            if not isinstance(s, dict) or "id" not in s or "title" not in s:
+                continue
+            # Associate imported session with current authenticated user
+            s_user_id = user["id"] if user else (s.get("user_id") or DEMO_USER_ID)
             cursor.execute(
                 """INSERT INTO sessions (id, title, filename, language, is_runnable, user_id, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                    title=excluded.title, filename=excluded.filename, language=excluded.language,
                    is_runnable=excluded.is_runnable, user_id=excluded.user_id, updated_at=excluded.updated_at""",
-                (s["id"], s["title"], s.get("filename"), s.get("language"), s.get("is_runnable", 1), s_user_id, s["created_at"], s["updated_at"])
+                (str(s["id"]), str(s["title"]), s.get("filename"), s.get("language"), s.get("is_runnable", 1), s_user_id, s.get("created_at", get_iso_now()), s.get("updated_at", get_iso_now()))
             )
             imported_sessions += 1
 
@@ -640,7 +715,7 @@ def import_all_sessions(
         valid_session_ids = {r["id"] for r in cursor.fetchall()}
 
         for v in data.get("code_versions", []):
-            if v["session_id"] not in valid_session_ids:
+            if not isinstance(v, dict) or v.get("session_id") not in valid_session_ids:
                 continue
             cursor.execute(
                 """INSERT INTO code_versions (id, session_id, version_number, code, language, filename, created_at, execution_result_json)
@@ -649,14 +724,14 @@ def import_all_sessions(
                    session_id=excluded.session_id, version_number=excluded.version_number,
                    code=excluded.code, language=excluded.language, filename=excluded.filename,
                    execution_result_json=excluded.execution_result_json""",
-                (v["id"], v["session_id"], v["version_number"], v["code"], v["language"], v.get("filename"), v["created_at"], v.get("execution_result_json"))
+                (str(v["id"]), str(v["session_id"]), v.get("version_number", 1), v.get("code", ""), v.get("language", "python"), v.get("filename"), v.get("created_at", get_iso_now()), v.get("execution_result_json"))
             )
 
         cursor.execute("SELECT id FROM code_versions")
         valid_version_ids = {r["id"] for r in cursor.fetchall()}
 
         for a in data.get("analyses", []):
-            if a["code_version_id"] not in valid_version_ids:
+            if not isinstance(a, dict) or a.get("code_version_id") not in valid_version_ids:
                 continue
             cursor.execute(
                 """INSERT INTO analyses (
@@ -679,19 +754,19 @@ def import_all_sessions(
                     loop_details_json=excluded.loop_details_json, expected_io_json=excluded.expected_io_json,
                     viva_questions_json=excluded.viva_questions_json""",
                 (
-                    a["id"], a["code_version_id"], a["mode"], a["overview"], a["logic_workflow"],
-                    a["line_by_line_json"], a["inputs_text"], a["outputs_text"],
-                    a["variables_functions_json"], a["concepts_json"], a["limitations_json"],
-                    a["complexity_time"], a["complexity_space"], a["complexity_explanation"],
-                    a["learning_takeaway"], a["diagnostics_json"], a.get("suggested_code"),
+                    str(a["id"]), str(a["code_version_id"]), a.get("mode", "local"), a.get("overview", ""), a.get("logic_workflow", ""),
+                    a.get("line_by_line_json", "[]"), a.get("inputs_text", ""), a.get("outputs_text", ""),
+                    a.get("variables_functions_json", "[]"), a.get("concepts_json", "[]"), a.get("limitations_json", "[]"),
+                    a.get("complexity_time", "O(1)"), a.get("complexity_space", "O(1)"), a.get("complexity_explanation", ""),
+                    a.get("learning_takeaway", ""), a.get("diagnostics_json", "[]"), a.get("suggested_code"),
                     a.get("explanation_of_changes"), a.get("dry_run_json"), a.get("loop_details_json"),
                     a.get("expected_io_json"), a.get("viva_questions_json"),
-                    a["created_at"]
+                    a.get("created_at", get_iso_now())
                 )
             )
 
         for m in data.get("messages", []):
-            if m["session_id"] not in valid_session_ids:
+            if not isinstance(m, dict) or m.get("session_id") not in valid_session_ids:
                 continue
             v_id = m.get("code_version_id")
             if v_id and v_id not in valid_version_ids:
@@ -702,7 +777,7 @@ def import_all_sessions(
                    ON CONFLICT(id) DO UPDATE SET
                    session_id=excluded.session_id, code_version_id=excluded.code_version_id,
                    role=excluded.role, content=excluded.content, mode=excluded.mode""",
-                (m["id"], m["session_id"], v_id, m["role"], m["content"], m["mode"], m["created_at"])
+                (str(m["id"]), str(m["session_id"]), v_id, m.get("role", "user"), m.get("content", ""), m.get("mode", "local"), m.get("created_at", get_iso_now()))
             )
 
     return {"status": "success", "imported_sessions_count": imported_sessions}

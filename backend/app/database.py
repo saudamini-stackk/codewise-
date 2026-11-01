@@ -97,6 +97,36 @@ def init_db() -> None:
         except Exception:
             pass
 
+        # Practice Assessment Tables
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS practice_tests (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                session_id TEXT,
+                code_hash TEXT NOT NULL,
+                questions_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS practice_evaluations (
+                id TEXT PRIMARY KEY,
+                test_id TEXT NOT NULL,
+                user_id TEXT,
+                total_questions INTEGER NOT NULL,
+                correct_count INTEGER NOT NULL,
+                score_percentage REAL NOT NULL,
+                evaluations_json TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                FOREIGN KEY (test_id) REFERENCES practice_tests (id) ON DELETE CASCADE
+            );
+        """)
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_practice_tests_session ON practice_tests (session_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_practice_evals_test ON practice_evaluations (test_id);")
+
         # Migration: enhance sessions and code_versions for VS Code File Explorer model
         try:
             cursor.execute("ALTER TABLE sessions ADD COLUMN filename TEXT;")

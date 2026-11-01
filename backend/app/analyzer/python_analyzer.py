@@ -1,5 +1,7 @@
 import ast
 import re
+import builtins
+import difflib
 from typing import Optional, List, Dict, Any, Set
 from .base import BaseAnalyzer, extract_lines, get_code_snippet
 from ..models import (
@@ -13,6 +15,10 @@ from ..models import (
     DryRunStep,
     LoopDetails
 )
+
+PYTHON_BUILTINS = set(dir(builtins)) | {
+    "__file__", "__name__", "__doc__", "__annotations__", "__package__", "__loader__", "__spec__"
+}
 
 class PythonAnalyzer(BaseAnalyzer):
     def analyze(self, code: str, filename: Optional[str] = None) -> AnalysisResult:
@@ -52,12 +58,82 @@ class PythonAnalyzer(BaseAnalyzer):
                 self.outer = outer
                 self.current_func = None
                 self.current_loop_depth = 0
+                self.scopes: List[Dict[str, bool]] = [{}]
+                self.type_env: Dict[str, Dict[str, Any]] = {}
+                self.functions_signatures: Dict[str, tuple[int, int, int]] = {}
+                self.defined_classes: Set[str] = set()
+                self.imported_modules: Set[str] = set()
+
+            def infer_expr_type(self, expr: ast.AST) -> Dict[str, Any]:
+                if isinstance(expr, ast.Constant):
+                    val = expr.value
+                    return {"type": type(val).__name__, "val": val}
+                elif isinstance(expr, ast.List):
+                    elts = [self.infer_expr_type(e) for e in expr.elts]
+                    return {"type": "list", "elements": elts, "len": len(elts)}
+                elif isinstance(expr, ast.Tuple):
+                    elts = [self.infer_expr_type(e) for e in expr.elts]
+                    return {"type": "tuple", "elements": elts, "len": len(elts)}
+                elif isinstance(expr, ast.Dict):
+                    keys = [k.value for k in expr.keys if isinstance(k, ast.Constant)]
+                    return {"type": "dict", "keys": keys}
+                elif isinstance(expr, ast.Name):
+                    return self.type_env.get(expr.id, {"type": "unknown"})
+                elif isinstance(expr, ast.Call):
+                    func_id = getattr(expr.func, "id", None)
+                    if func_id in {"int", "float"}:
+                        return {"type": func_id}
+                    elif func_id == "str":
+                        return {"type": "str"}
+                    elif func_id == "list":
+                        return {"type": "list"}
+                return {"type": "unknown"}
+
+            def is_name_defined(self, name: str) -> bool:
+                for sc in reversed(self.scopes):
+                    if name in sc:
+                        return True
+                return (
+                    name in PYTHON_BUILTINS
+                    or name in functions_defined
+                    or name in self.defined_classes
+                    or name in self.imported_modules
+                )
+
+            def get_all_known_identifiers(self) -> Set[str]:
+                all_ids = set(PYTHON_BUILTINS)
+                for sc in self.scopes:
+                    all_ids.update(sc.keys())
+                all_ids.update(functions_defined.keys())
+                all_ids.update(self.defined_classes)
+                all_ids.update(self.imported_modules)
+                return all_ids
+
+            def visit_Import(self, node: ast.Import):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    self.scopes[-1][name] = True
+                    self.imported_modules.add(alias.name.split('.')[0])
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    self.scopes[-1][name] = True
+                self.generic_visit(node)
 
             def visit_FunctionDef(self, node: ast.FunctionDef):
                 concepts.add("Functions")
+                self.scopes[-1][node.name] = True
                 functions_defined[node.name] = node
                 function_calls[node.name] = set()
-                
+
+                pos_args = [a.arg for a in node.args.args]
+                defaults_count = len(node.args.defaults)
+                min_args = len(pos_args) - defaults_count
+                max_args = len(pos_args) if not node.args.vararg else 9999
+                self.functions_signatures[node.name] = (min_args, max_args, node.lineno)
+
                 # Check for recursion or mutable defaults
                 for default in node.args.defaults:
                     if isinstance(default, (ast.List, ast.Dict, ast.Set)):
@@ -69,10 +145,19 @@ class PythonAnalyzer(BaseAnalyzer):
                             explanation=f"Function '{node.name}' uses a mutable default argument ({type(default).__name__.lower()}). In Python, default arguments are evaluated once at definition time, sharing state across invocations.",
                             recommended_correction="Use None as default argument and initialize the mutable object inside the function body.",
                             corrected_snippet=f"def {node.name}(..., param=None):\n    if param is None:\n        param = []",
-                            detection_type="static_heuristic"
+                            detection_type="static_heuristic",
+                            detection_source="static_heuristic"
                         ))
 
-                # Extract parameters
+                # Push function scope
+                self.scopes.append({})
+                for a in node.args.args:
+                    self.scopes[-1][a.arg] = True
+                if node.args.vararg:
+                    self.scopes[-1][node.args.vararg.arg] = True
+                if node.args.kwarg:
+                    self.scopes[-1][node.args.kwarg.arg] = True
+
                 params = [arg.arg for arg in node.args.args]
                 param_str = f"({', '.join(params)})" if params else "()"
                 doc = ast.get_docstring(node)
@@ -85,16 +170,19 @@ class PythonAnalyzer(BaseAnalyzer):
                     kind="function",
                     data_type="function",
                     description=desc + f" {param_str}",
-                    scope="module"
+                    scope="module" if len(self.scopes) <= 2 else "local"
                 ))
 
                 prev_func = self.current_func
                 self.current_func = node.name
                 self.generic_visit(node)
                 self.current_func = prev_func
+                self.scopes.pop()
 
             def visit_ClassDef(self, node: ast.ClassDef):
                 concepts.add("Object-Oriented Programming (Classes)")
+                self.scopes[-1][node.name] = True
+                self.defined_classes.add(node.name)
                 variables_functions.append(VariableFunctionItem(
                     name=node.name,
                     kind="class",
@@ -102,7 +190,9 @@ class PythonAnalyzer(BaseAnalyzer):
                     description=f"Class definition with {len(node.body)} members.",
                     scope="module"
                 ))
+                self.scopes.append({})
                 self.generic_visit(node)
+                self.scopes.pop()
 
             def visit_For(self, node: ast.For):
                 nonlocal max_loop_depth
@@ -110,6 +200,14 @@ class PythonAnalyzer(BaseAnalyzer):
                 self.current_loop_depth += 1
                 if self.current_loop_depth > max_loop_depth:
                     max_loop_depth = self.current_loop_depth
+
+                if isinstance(node.target, ast.Name):
+                    self.scopes[-1][node.target.id] = True
+                elif isinstance(node.target, (ast.Tuple, ast.List)):
+                    for elt in node.target.elts:
+                        if isinstance(elt, ast.Name):
+                            self.scopes[-1][elt.id] = True
+
                 self.generic_visit(node)
                 self.current_loop_depth -= 1
 
@@ -119,19 +217,20 @@ class PythonAnalyzer(BaseAnalyzer):
                 self.current_loop_depth += 1
                 if self.current_loop_depth > max_loop_depth:
                     max_loop_depth = self.current_loop_depth
-                
-                # Check for infinite loop while True without break
+
+                # Check for infinite loop while True without break or return
                 if isinstance(node.test, ast.Constant) and node.test.value is True:
-                    has_break = any(isinstance(n, ast.Break) for n in ast.walk(node))
-                    if not has_break:
+                    has_exit = any(isinstance(n, (ast.Break, ast.Return)) for n in ast.walk(node))
+                    if not has_exit:
                         diagnostics.append(DiagnosticItem(
                             id=f"infinite-loop-{node.lineno}",
                             title="Potential Infinite Loop",
                             severity="warning",
                             line_number=node.lineno,
-                            explanation="Detected 'while True' loop with no explicit 'break' statement within its immediate block. This may run indefinitely.",
+                            explanation="Detected 'while True' loop with no explicit 'break' or 'return' statement within its immediate block. This may run indefinitely.",
                             recommended_correction="Ensure there is a break condition or terminate based on user input or state change.",
-                            detection_type="static_heuristic"
+                            detection_type="static_heuristic",
+                            detection_source="static_heuristic"
                         ))
                 self.generic_visit(node)
                 self.current_loop_depth -= 1
@@ -144,9 +243,11 @@ class PythonAnalyzer(BaseAnalyzer):
                 concepts.add("Exception Handling (try/except)")
                 nonlocal in_try_block
                 in_try_block = True
-                
+
                 # Check for bare except:
                 for handler in node.handlers:
+                    if handler.name:
+                        self.scopes[-1][handler.name] = True
                     if handler.type is None:
                         diagnostics.append(DiagnosticItem(
                             id=f"bare-except-{handler.lineno}",
@@ -155,50 +256,73 @@ class PythonAnalyzer(BaseAnalyzer):
                             line_number=handler.lineno,
                             explanation="Using bare 'except:' catches all exceptions, including KeyboardInterrupt and SystemExit, hiding critical issues.",
                             recommended_correction="Catch specific exceptions, e.g., 'except ValueError:' or 'except Exception:'.",
-                            detection_type="static_heuristic"
+                            detection_type="static_heuristic",
+                            detection_source="static_heuristic"
                         ))
                 self.generic_visit(node)
                 in_try_block = False
 
+            def visit_With(self, node: ast.With):
+                for item in node.items:
+                    if item.optional_vars and isinstance(item.optional_vars, ast.Name):
+                        self.scopes[-1][item.optional_vars.id] = True
+                self.generic_visit(node)
+
+            def visit_ListComp(self, node: ast.ListComp):
+                self.scopes.append({})
+                for gen in node.generators:
+                    if isinstance(gen.target, ast.Name):
+                        self.scopes[-1][gen.target.id] = True
+                self.generic_visit(node)
+                self.scopes.pop()
+
+            def visit_SetComp(self, node: ast.SetComp):
+                self.scopes.append({})
+                for gen in node.generators:
+                    if isinstance(gen.target, ast.Name):
+                        self.scopes[-1][gen.target.id] = True
+                self.generic_visit(node)
+                self.scopes.pop()
+
+            def visit_DictComp(self, node: ast.DictComp):
+                self.scopes.append({})
+                for gen in node.generators:
+                    if isinstance(gen.target, ast.Name):
+                        self.scopes[-1][gen.target.id] = True
+                self.generic_visit(node)
+                self.scopes.pop()
+
+            def visit_GeneratorExp(self, node: ast.GeneratorExp):
+                self.scopes.append({})
+                for gen in node.generators:
+                    if isinstance(gen.target, ast.Name):
+                        self.scopes[-1][gen.target.id] = True
+                self.generic_visit(node)
+                self.scopes.pop()
+
             def visit_Assign(self, node: ast.Assign):
                 concepts.add("Variable Assignment")
+                val_type_info = self.infer_expr_type(node.value)
+                val_type = val_type_info.get("type", "unknown")
+                type_desc = "value"
+
+                if isinstance(node.value, ast.Constant):
+                    type_desc = f"{val_type} literal ({repr(node.value.value)})"
+                elif isinstance(node.value, ast.List):
+                    type_desc = f"list collection with {len(node.value.elts)} element(s)"
+                elif isinstance(node.value, ast.Dict):
+                    type_desc = f"dictionary collection with {len(node.value.keys)} key(s)"
+                elif isinstance(node.value, ast.Call):
+                    func_id = getattr(node.value.func, "id", None)
+                    if func_id in {"int", "float"}:
+                        type_desc = f"{func_id} numeric value"
+                    elif func_id == "input":
+                        type_desc = "string read from console input"
+
                 for target in node.targets:
                     if isinstance(target, ast.Name):
-                        val_type = "unknown"
-                        type_desc = "value"
-                        if isinstance(node.value, ast.Constant):
-                            val_type = type(node.value.value).__name__
-                            type_desc = f"{val_type} literal ({repr(node.value.value)})"
-                        elif isinstance(node.value, ast.List):
-                            val_type = "list"
-                            type_desc = "list collection"
-                        elif isinstance(node.value, ast.Dict):
-                            val_type = "dict"
-                            type_desc = "dictionary collection"
-                        elif isinstance(node.value, ast.Call):
-                            func_id = getattr(node.value.func, "id", None)
-                            if func_id in {"int", "float"}:
-                                if node.value.args and isinstance(node.value.args[0], ast.Call) and getattr(node.value.args[0].func, "id", "") == "input":
-                                    val_type = f"{func_id} (from user input)"
-                                    type_desc = f"integer converted from console user input" if func_id == "int" else "floating-point number converted from user input"
-                                else:
-                                    val_type = func_id
-                                    type_desc = f"{func_id} value"
-                            elif func_id == "input":
-                                val_type = "str (from user input)"
-                                type_desc = "string read from console user input"
-                            elif func_id == "str":
-                                val_type = "str"
-                                type_desc = "string value"
-                            elif func_id and func_id in functions_defined:
-                                val_type = f"return value of {func_id}()"
-                                type_desc = f"value returned by function `{func_id}`"
-                            else:
-                                val_type = f"result of {func_id or 'function'}()"
-                                type_desc = f"result of `{func_id or 'function'}()` call"
-                        elif isinstance(node.value, ast.BinOp):
-                            val_type = "computed numeric"
-                            type_desc = "computed arithmetic result"
+                        self.scopes[-1][target.id] = True
+                        self.type_env[target.id] = val_type_info
 
                         # Shadowing builtins check
                         if target.id in {"list", "dict", "str", "int", "float", "id", "type", "set", "max", "min"}:
@@ -209,7 +333,8 @@ class PythonAnalyzer(BaseAnalyzer):
                                 line_number=node.lineno,
                                 explanation=f"Variable '{target.id}' shadows Python's built-in '{target.id}'. This overrides the built-in function/type in this scope.",
                                 recommended_correction=f"Rename variable '{target.id}' to something more descriptive (e.g. '{target.id}_val' or 'item_{target.id}').",
-                                detection_type="static_heuristic"
+                                detection_type="static_heuristic",
+                                detection_source="static_heuristic"
                             ))
 
                         variables_functions.append(VariableFunctionItem(
@@ -219,6 +344,10 @@ class PythonAnalyzer(BaseAnalyzer):
                             description=f"Stores {type_desc} assigned on line {node.lineno}.",
                             scope=self.current_func or "module"
                         ))
+                    elif isinstance(target, (ast.Tuple, ast.List)):
+                        for elt in target.elts:
+                            if isinstance(elt, ast.Name):
+                                self.scopes[-1][elt.id] = True
                 self.generic_visit(node)
 
             def visit_BinOp(self, node: ast.BinOp):
@@ -238,8 +367,99 @@ class PythonAnalyzer(BaseAnalyzer):
                             line_number=node.lineno,
                             explanation=f"A literal 0 is used as the divisor in a {op_name.lower()} operation on line {node.lineno}. This will raise a ZeroDivisionError at runtime.",
                             recommended_correction="Ensure the divisor is non-zero before performing the operation.",
-                            detection_type="static_heuristic"
+                            detection_type="static_heuristic",
+                            detection_source="static_heuristic"
                         ))
+
+                # Check for type mismatches on binary operations
+                lt_info = self.infer_expr_type(node.left)
+                rt_info = self.infer_expr_type(node.right)
+                lt = lt_info.get("type")
+                rt = rt_info.get("type")
+
+                if isinstance(node.op, ast.Add):
+                    if (lt == "str" and rt in ("int", "float")) or (lt in ("int", "float") and rt == "str"):
+                        diagnostics.append(DiagnosticItem(
+                            id=f"type-mismatch-add-{node.lineno}",
+                            title="Type Mismatch: Incompatible Operand Types for +",
+                            severity="error",
+                            line_number=node.lineno,
+                            explanation=(
+                                f"TypeError on line {node.lineno}: cannot concatenate or add incompatible types '{lt}' and '{rt}'. "
+                                f"In Python, adding a string to an integer or float raises `TypeError: can only concatenate str (not '{rt}') to str`."
+                            ),
+                            recommended_correction="Convert string values using int() or float() for arithmetic addition, or convert numbers using str() for concatenation.",
+                            corrected_snippet=(
+                                f"# Line {node.lineno} correction:\n"
+                                f"result = int({ast.unparse(node.left) if hasattr(ast, 'unparse') else '...'}) + {ast.unparse(node.right) if hasattr(ast, 'unparse') else '...'}"
+                            ),
+                            detection_type="static_type_analysis",
+                            detection_source="static_type_analysis"
+                        ))
+                elif isinstance(node.op, (ast.Sub, ast.Div, ast.FloorDiv, ast.Mod)):
+                    if lt == "str" or rt == "str":
+                        op_sym = "/" if isinstance(node.op, ast.Div) else ("//" if isinstance(node.op, ast.FloorDiv) else ("-" if isinstance(node.op, ast.Sub) else "%"))
+                        diagnostics.append(DiagnosticItem(
+                            id=f"type-mismatch-binop-{node.lineno}",
+                            title=f"Type Mismatch: Unsupported Operand Types for '{op_sym}'",
+                            severity="error",
+                            line_number=node.lineno,
+                            explanation=(
+                                f"TypeError on line {node.lineno}: unsupported operand type(s) for {op_sym}: '{lt}' and '{rt}'. "
+                                f"Python cannot perform mathematical division or subtraction directly on string values."
+                            ),
+                            recommended_correction="Convert string values into numeric types (e.g. using int() or float()) before applying arithmetic operations.",
+                            corrected_snippet=(
+                                f"# Line {node.lineno} correction:\n"
+                                f"result = int({ast.unparse(node.left) if hasattr(ast, 'unparse') else '...'}) {op_sym} 2"
+                            ),
+                            detection_type="static_type_analysis",
+                            detection_source="static_type_analysis"
+                        ))
+
+                self.generic_visit(node)
+
+            def visit_Subscript(self, node: ast.Subscript):
+                if isinstance(node.ctx, ast.Load):
+                    target_t = self.infer_expr_type(node.value)
+                    # List or tuple index out of range check
+                    if target_t.get("type") in ("list", "tuple") and "len" in target_t:
+                        k_len = target_t["len"]
+                        slice_node = node.slice
+                        if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, int):
+                            idx = slice_node.value
+                            if idx >= k_len or idx < -k_len:
+                                coll_name = getattr(node.value, "id", "collection")
+                                diagnostics.append(DiagnosticItem(
+                                    id=f"index-error-{node.lineno}",
+                                    title="List/Tuple IndexError: Index Out of Range",
+                                    severity="error",
+                                    line_number=node.lineno,
+                                    explanation=(
+                                        f"IndexError on line {node.lineno}: attempted to access index {idx} on collection '{coll_name}' "
+                                        f"of static length {k_len}. Valid zero-based indices are 0 to {k_len - 1} (or -{k_len} to -1)."
+                                    ),
+                                    recommended_correction=f"Access a valid index between 0 and {k_len - 1}, or verify the collection length using len({coll_name}) before indexing.",
+                                    corrected_snippet=f"# Line {node.lineno} correction:\nif len({coll_name}) > {idx}:\n    print({coll_name}[{idx}])",
+                                    detection_type="static_heuristic",
+                                    detection_source="static_heuristic"
+                                ))
+                    # Dict key error on constant dict
+                    elif target_t.get("type") == "dict" and "keys" in target_t:
+                        slice_node = node.slice
+                        if isinstance(slice_node, ast.Constant) and slice_node.value not in target_t["keys"]:
+                            dict_name = getattr(node.value, "id", "dictionary")
+                            avail_keys = ", ".join(repr(k) for k in target_t["keys"])
+                            diagnostics.append(DiagnosticItem(
+                                id=f"key-error-{node.lineno}",
+                                title=f"Dictionary KeyError: Missing Key '{slice_node.value}'",
+                                severity="warning",
+                                line_number=node.lineno,
+                                explanation=f"KeyError risk on line {node.lineno}: key {repr(slice_node.value)} was not found in static dictionary '{dict_name}'. Available keys: [{avail_keys}].",
+                                recommended_correction=f"Verify that the key exists or use '{dict_name}.get({repr(slice_node.value)}, default)' for safe retrieval without exceptions.",
+                                detection_type="static_heuristic",
+                                detection_source="static_heuristic"
+                            ))
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call):
@@ -252,7 +472,7 @@ class PythonAnalyzer(BaseAnalyzer):
                 if func_name:
                     if self.current_func:
                         function_calls[self.current_func].add(func_name)
-                    
+
                     if func_name == "input":
                         nonlocal has_input_call
                         has_input_call = True
@@ -260,10 +480,81 @@ class PythonAnalyzer(BaseAnalyzer):
                         if node.args and isinstance(node.args[0], ast.Constant):
                             prompt_text = f" with prompt: '{node.args[0].value}'"
                         inputs_found.append(f"Standard terminal input (`input()`{prompt_text} on line {node.lineno})")
-                    
+
                     elif func_name == "print":
                         concepts.add("Console Output")
                         outputs_found.append(f"Standard console output (`print()` on line {node.lineno})")
+
+                    # 1. Type mismatch in sum() call
+                    if func_name == "sum" and node.args:
+                        arg_info = self.infer_expr_type(node.args[0])
+                        if arg_info.get("type") in ("list", "tuple") and "elements" in arg_info:
+                            str_elements = [
+                                (i, elt.get("val"))
+                                for i, elt in enumerate(arg_info["elements"])
+                                if elt.get("type") == "str"
+                            ]
+                            if str_elements:
+                                str_reprs = ", ".join(f"element {repr(val)} (index {idx})" for idx, val in str_elements)
+                                diagnostics.append(DiagnosticItem(
+                                    id=f"type-mismatch-sum-{node.lineno}",
+                                    title="Type Mismatch in sum(): Mixed Types in Collection",
+                                    severity="error",
+                                    line_number=node.lineno,
+                                    explanation=(
+                                        f"TypeError on line {node.lineno}: `sum()` requires an iterable of numeric values. "
+                                        f"The list/tuple contains string element(s) ({str_reprs}). In Python, adding a string to an integer "
+                                        f"raises `TypeError: unsupported operand type(s) for +: 'int' and 'str'`."
+                                    ),
+                                    recommended_correction="Ensure all items in the sequence are numeric. Convert string elements using int() or float() before summing.",
+                                    corrected_snippet="total = sum(int(x) for x in numbers)",
+                                    detection_type="static_type_analysis",
+                                    detection_source="static_type_analysis"
+                                ))
+
+                    # 2. Invalid literal type conversion
+                    if func_name in {"int", "float"} and node.args:
+                        arg_t = self.infer_expr_type(node.args[0])
+                        if arg_t.get("type") == "str" and "val" in arg_t:
+                            raw_s = str(arg_t["val"])
+                            is_valid = True
+                            try:
+                                if func_name == "int":
+                                    int(raw_s)
+                                else:
+                                    float(raw_s)
+                            except ValueError:
+                                is_valid = False
+                            if not is_valid:
+                                diagnostics.append(DiagnosticItem(
+                                    id=f"invalid-conversion-{node.lineno}",
+                                    title=f"Invalid Type Conversion: Invalid Literal for {func_name}()",
+                                    severity="error",
+                                    line_number=node.lineno,
+                                    explanation=f"ValueError on line {node.lineno}: invalid literal for {func_name}() with base 10: '{raw_s}'. The string cannot be parsed as a numeric value.",
+                                    recommended_correction=f"Ensure the argument passed to {func_name}() is a valid numeric string, or guard the conversion with a try/except block.",
+                                    detection_type="static_type_analysis",
+                                    detection_source="static_type_analysis"
+                                ))
+
+                    # 3. Arity mismatch for locally defined functions
+                    if func_name in self.functions_signatures:
+                        min_args, max_args, def_line = self.functions_signatures[func_name]
+                        provided_args = len(node.args)
+                        if provided_args < min_args or provided_args > max_args:
+                            diagnostics.append(DiagnosticItem(
+                                id=f"arity-mismatch-{node.lineno}",
+                                title=f"Incorrect Function Argument Count for '{func_name}()'",
+                                severity="error",
+                                line_number=node.lineno,
+                                explanation=(
+                                    f"TypeError on line {node.lineno}: function '{func_name}()' (defined on line {def_line}) "
+                                    f"expects {min_args} required argument(s), but {provided_args} argument(s) were given."
+                                ),
+                                recommended_correction=f"Provide {min_args} argument(s) when calling '{func_name}()'.",
+                                detection_type="static_heuristic",
+                                detection_source="static_heuristic"
+                            ))
 
                 # Check if int(input()) or float(input()) is called outside a try/except block
                 if isinstance(node.func, ast.Name) and node.func.id in {"int", "float"}:
@@ -291,9 +582,36 @@ class PythonAnalyzer(BaseAnalyzer):
                                     corrected_snippet=(
                                         f"try:\n    val = {node.func.id}(input(...))\nexcept ValueError:\n    print('Invalid input: please enter a valid number.')"
                                     ),
-                                    detection_type="heuristic_warning"
+                                    detection_type="static_heuristic",
+                                    detection_source="static_heuristic"
                                 ))
 
+                self.generic_visit(node)
+
+            def visit_Name(self, node: ast.Name):
+                if isinstance(node.ctx, ast.Load):
+                    name = node.id
+                    if not self.is_name_defined(name):
+                        all_ids = self.get_all_known_identifiers()
+                        matches = difflib.get_close_matches(
+                            name,
+                            [k for k in all_ids if len(k) > 1 and not k.startswith('_')],
+                            n=1,
+                            cutoff=0.6
+                        )
+                        suggestion = matches[0] if matches else None
+                        sugg_text = f" Did you mean '{suggestion}'?" if suggestion else ""
+                        diagnostics.append(DiagnosticItem(
+                            id=f"undefined-variable-{node.lineno}-{name}",
+                            title=f"Undefined Variable: '{name}'",
+                            severity="error",
+                            line_number=node.lineno,
+                            explanation=f"NameError on line {node.lineno}: name '{name}' is not defined. The variable '{name}' is referenced before being assigned in this scope.{sugg_text}",
+                            recommended_correction=f"Define variable '{name}' before referencing it" + (f", or correct the spelling to '{suggestion}'." if suggestion else "."),
+                            corrected_snippet=f"# Declare before line {node.lineno}:\n{name} = ...",
+                            detection_type="static_heuristic",
+                            detection_source="static_heuristic"
+                        ))
                 self.generic_visit(node)
 
             def visit_Return(self, node: ast.Return):
@@ -679,6 +997,33 @@ class PythonAnalyzer(BaseAnalyzer):
         if any(diag.id.startswith("zero-div") for diag in diagnostics):
             corrected_code = re.sub(r"/\s*0\b", "/ 1 # Corrected: Avoid division by zero", corrected_code)
             corrected_code = re.sub(r"%\s*0\b", "% 1 # Corrected: Avoid modulo by zero", corrected_code)
+
+        # Handle type mismatch in sum()
+        for diag in diagnostics:
+            if diag.id.startswith("type-mismatch-sum"):
+                # Clean strings in list literals: e.g. [10, 20, "30", 40] -> [10, 20, 30, 40]
+                def replace_quoted_num(m):
+                    return m.group(1)
+                corrected_code = re.sub(r'["\'](\d+)["\']', replace_quoted_num, corrected_code)
+
+            elif diag.id.startswith("undefined-variable"):
+                match = re.search(r"Did you mean '([a-zA-Z0-9_]+)'\?", diag.explanation)
+                if match:
+                    sugg_var = match.group(1)
+                    bad_var = diag.title.replace("Undefined Variable: '", "").rstrip("'")
+                    corrected_code = re.sub(r'\b' + re.escape(bad_var) + r'\b', sugg_var, corrected_code)
+
+            elif diag.id.startswith("type-mismatch-add"):
+                # "10" + 5 -> int("10") + 5
+                corrected_code = re.sub(r'["\'](\d+)["\']\s*\+\s*(\d+)', r'int("\1") + \2', corrected_code)
+
+            elif diag.id.startswith("type-mismatch-binop"):
+                # age / 2 -> int(age) / 2
+                match = re.search(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*/\s*(\d+)', corrected_code)
+                if match:
+                    v_name = match.group(1)
+                    denom = match.group(2)
+                    corrected_code = re.sub(r'\b' + re.escape(v_name) + r'\s*/\s*' + re.escape(denom), f'int({v_name}) / {denom}', corrected_code)
 
         # Proportional fix for unhandled input conversion: clean try...except ValueError:
         if has_unhandled_input and not re.search(r"^\s*try\s*:", code, re.MULTILINE):

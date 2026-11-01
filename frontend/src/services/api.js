@@ -20,14 +20,19 @@ async function request(endpoint, options = {}) {
     headers
   });
 
-  if (!response.ok) {
-    let errorDetail = 'Request failed';
-    try {
-      const errJson = await response.json();
-      errorDetail = errJson.detail || errJson.message || errorDetail;
-    } catch {
-      errorDetail = response.statusText || errorDetail;
+  const rawText = await response.text();
+  let data;
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    if (rawText.includes('<!DOCTYPE') || rawText.includes('<html')) {
+      throw new Error('Backend connection error: The request was answered by the static frontend instead of the API server. Please configure your backend URL or Render /api/* rewrite rule.');
     }
+    throw new Error(response.statusText || 'Unexpected server response');
+  }
+
+  if (!response.ok) {
+    const errorDetail = data?.detail || data?.message || response.statusText || 'Request failed';
 
     // If 401 and not an authentication attempt, notify app of expired session
     if (response.status === 401 && !endpoint.startsWith('/auth/login') && !endpoint.startsWith('/auth/register')) {
@@ -40,7 +45,7 @@ async function request(endpoint, options = {}) {
     throw new Error(errorDetail);
   }
 
-  return response.json();
+  return data;
 }
 
 export const api = {

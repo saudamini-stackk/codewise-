@@ -320,3 +320,6 @@ There are two easy methods to transfer your saved sessions, code revisions, and 
 - **Sandboxed Execution**: Executed code runs inside an isolated temporary directory with enforced timeouts (5.0s), CPU limits (6s/8s), and file creation caps (10 MB).
 - **Local-First Privacy**: Code analysis, explanations, complexity estimation, and tutor conversations operate 100% locally by default without transmitting data to third-party servers.
 - **Strictly Local Scope**: No GitHub connections, remote databases, or cloud deployments (e.g. Render) have been provisioned or configured.
+
+##  Deployed link 
+https://codewise-app.onrender.com

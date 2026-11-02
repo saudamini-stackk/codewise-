@@ -153,7 +153,7 @@ export default function AnalysisView({
           </span>
           {analysis.mode && (
             <span className="code-inline" style={{ fontSize: '0.68rem', textTransform: 'uppercase', padding: '1px 5px' }}>
-              {analysis.mode}
+              {analysis.mode === 'ai' ? 'Gemini AI' : 'Local Engine'}
             </span>
           )}
         </div>

@@ -229,7 +229,7 @@ export default function ChatAssistant({
                     {renderFormattedContent(m.content, m.id)}
                   </div>
                   <div className="chat-time">
-                    {m.role === 'user' ? 'You' : 'codewise Tutor'}
+                    {m.role === 'user' ? 'You' : `codewise Tutor (${m.mode === 'ai' ? 'Gemini AI' : 'Local Engine'})`}
                   </div>
                 </div>
               ))
